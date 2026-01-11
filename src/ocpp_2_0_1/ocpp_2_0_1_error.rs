@@ -1,7 +1,7 @@
+use crate::ocpp_2_0_1::raw_ocpp_2_0_1_error::RawOcpp2_0_1Error;
+use serde_json::{json, Value};
 use std::fmt;
 use std::fmt::Display;
-use serde_json::{json, Value};
-use crate::ocpp_2_0_1::raw_ocpp_2_0_1_error::RawOcpp2_0_1Error;
 
 /// Represents an OCPP 2.0.1 error
 #[derive(Debug, Clone)]
@@ -19,7 +19,6 @@ pub enum OCPP2_0_1Error {
     SecurityError { description: String, details: Value },
     TypeConstraintViolation { description: String, details: Value },
 }
-
 
 impl OCPP2_0_1Error {
     pub fn new_not_implemented(description: &str) -> Self {
@@ -327,7 +326,7 @@ impl fmt::Display for OCPP2_0_1Error {
                 "RpcFrameworkError: {} - {}",
                 description,
                 serde_json::to_string_pretty(details).unwrap()
-            )
+            ),
         }
     }
 }
@@ -337,84 +336,58 @@ impl std::error::Error for OCPP2_0_1Error {}
 impl From<RawOcpp2_0_1Error> for OCPP2_0_1Error {
     fn from(value: RawOcpp2_0_1Error) -> Self {
         match value.2.as_str() {
-            "NotImplemented" => {
-                Self::NotImplemented {
-                    description: value.3,
-                    details: value.4
-                }
+            "NotImplemented" => Self::NotImplemented {
+                description: value.3,
+                details: value.4,
             },
-            "NotSupported" => {
-                Self::NotSupported {
-                    description: value.3,
-                    details: value.4
-                }
+            "NotSupported" => Self::NotSupported {
+                description: value.3,
+                details: value.4,
             },
-            "InternalError" => {
-                Self::InternalError {
-                    description: value.3,
-                    details: value.4
-                }
+            "InternalError" => Self::InternalError {
+                description: value.3,
+                details: value.4,
             },
-            "ProtocolError" => {
-                Self::ProtocolError {
-                    description: value.3,
-                    details: value.4
-                }
+            "ProtocolError" => Self::ProtocolError {
+                description: value.3,
+                details: value.4,
             },
-            "SecurityError" => {
-                Self::SecurityError {
-                    description: value.3,
-                    details: value.4
-                }
+            "SecurityError" => Self::SecurityError {
+                description: value.3,
+                details: value.4,
             },
-            "FormatViolation" => {
-                Self::FormatViolation {
-                    description: value.3,
-                    details: value.4
-                }
+            "FormatViolation" => Self::FormatViolation {
+                description: value.3,
+                details: value.4,
             },
-            "PropertyConstraintViolation" => {
-                Self::PropertyConstraintViolation {
-                    description: value.3,
-                    details: value.4
-                }
+            "PropertyConstraintViolation" => Self::PropertyConstraintViolation {
+                description: value.3,
+                details: value.4,
             },
-            "OccurrenceConstraintViolation" => {
-                Self::OccurrenceConstraintViolation {
-                    description: value.3,
-                    details: value.4
-                }
+            "OccurrenceConstraintViolation" => Self::OccurrenceConstraintViolation {
+                description: value.3,
+                details: value.4,
             },
-            "TypeConstraintViolation" => {
-                Self::TypeConstraintViolation {
-                    description: value.3,
-                    details: value.4
-                }
+            "TypeConstraintViolation" => Self::TypeConstraintViolation {
+                description: value.3,
+                details: value.4,
             },
-            "MessageTypeNotSupported" => {
-                Self::MessageTypeNotSupported {
-                    description: value.3,
-                    details: value.4
-                }
+            "MessageTypeNotSupported" => Self::MessageTypeNotSupported {
+                description: value.3,
+                details: value.4,
             },
-            "RpcFrameworkError" => {
-                Self::RpcFrameworkError {
-                    description: value.3,
-                    details: value.4
-                }
+            "RpcFrameworkError" => Self::RpcFrameworkError {
+                description: value.3,
+                details: value.4,
             },
-            "GenericError" => {
-                Self::GenericError {
-                    description: value.3,
-                    details: value.4
-                }
+            "GenericError" => Self::GenericError {
+                description: value.3,
+                details: value.4,
             },
-            _ => {
-                Self::GenericError {
-                    description: value.3,
-                    details: value.4
-                }
-            }
+            _ => Self::GenericError {
+                description: value.3,
+                details: value.4,
+            },
         }
     }
 }

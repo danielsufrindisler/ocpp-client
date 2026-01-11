@@ -1,7 +1,6 @@
-
-
-mod connect;
 mod client;
+mod connect;
+mod reconnectws;
 
 #[cfg(feature = "ocpp_1_6")]
 pub mod ocpp_1_6;
@@ -21,3 +20,5 @@ pub use self::connect::connect_1_6;
 pub use self::connect::connect_2_0_1;
 
 pub use self::client::Client;
+
+pub use self::reconnectws::{MyWs, ReconnectWs};
