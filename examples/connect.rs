@@ -1,17 +1,23 @@
 use ocpp_client::Client::{OCPP1_6, OCPP2_0_1};
 use ocpp_client::{connect, ConnectOptions};
-use rust_ocpp::v1_6::messages::boot_notification::{self, BootNotificationRequest as BootNotificationRequest1_6};
+use rust_ocpp::v1_6::messages::boot_notification::{
+    self, BootNotificationRequest as BootNotificationRequest1_6,
+    BootNotificationResponse as BootNotificationResponse1_6,
+};
 use rust_ocpp::v2_0_1::messages::boot_notification::BootNotificationRequest as BootNotificationRequest2_0_1;
 
 use async_trait::async_trait;
 use ocpp_client::ocpp_1_6::OCPP1_6Client;
 use ocpp_client::ocpp_2_0_1::OCPP2_0_1Client;
+use ocpp_client::ocpp_deque::OCPPDeque;
+use ocpp_client::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError};
 use rust_ocpp::v1_6::messages::trigger_message::{TriggerMessageRequest, TriggerMessageResponse};
 use rust_ocpp::v1_6::types::TriggerMessageStatus;
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use ocpp_client::ocpp_1_6::raw_ocpp_1_6_call;
 use uuid::Uuid;
+
 #[async_trait]
 trait OCPPCommunicator: Send + Sync {
     async fn send_boot_notification(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -23,49 +29,73 @@ trait OCPPCommunicator: Send + Sync {
 
 struct OCPPCommunicator1_6 {
     client: OCPP1_6Client,
-    data: Arc<CPData>,
+    data: Arc<Mutex<CPData>>,
     tx: Option<mpsc::Sender<String>>,
+    ocpp_deque: OCPPDeque,
 }
 
 struct OCPPCommunicator2_0_1 {
     client: OCPP2_0_1Client,
-    data: Arc<CPData>,
+    data: Arc<Mutex<CPData>>,
     tx: Option<mpsc::Sender<String>>,
+    ocpp_deque: OCPPDeque,
 }
 
 #[async_trait]
 impl OCPPCommunicator for OCPPCommunicator1_6 {
     async fn send_boot_notification(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-       
+        let data: tokio::sync::MutexGuard<'_, CPData> = self.data.lock().await;
+        let boot_notification: BootNotificationRequest1_6 = BootNotificationRequest1_6 {
+            charge_point_model: data.model.clone(),
+            charge_point_vendor: data.vendor.clone(),
+            charge_point_serial_number: Some(data.serial.clone()),
+            ..Default::default()
+        };
+        let message_id = Uuid::new_v4();
 
-       let boot_notification: BootNotificationRequest1_6 = BootNotificationRequest1_6 {
-                charge_point_model: self.data.model.clone(),
-                charge_point_vendor: self.data.vendor.clone(),
-                charge_point_serial_number: Some(self.data.serial.clone()),
-                ..Default::default()
-            };
-         let message_id = Uuid::new_v4();
+        let cp_data_arc = Arc::clone(&self.data);
+        let callback = move |call: RawOcppCommonCall,
+                             ocpp_result: Result<Value, RawOcppCommonError>,
+                             self_clone: OCPPDeque| {
+            println!("BootNotification callback invoked");
+            let cp_data_arc2 = Arc::clone(&cp_data_arc);
+            async move {
+                println!("BootNotification callback invoked1");
 
-        let call: RawOcpp1_6Call = RawOcpp1_6Call(
+                println!(
+                    "BootNotification response received for message ID {}: {:?}",
+                    call.1, ocpp_result
+                );
+                let mut lock = cp_data_arc2.lock().await;
+                lock.booted = true;
+                println!("Booted set to true");
+            }
+        };
+
+        self.ocpp_deque
+            .handle_on_response(callback, "BootNotification")
+            .await;
+
+        let call: RawOcppCommonCall = RawOcppCommonCall(
             2,
             message_id.to_string(),
-            action.to_string(),
+            "BootNotification".to_string(),
             serde_json::to_value(&boot_notification)?,
         );
-        let response = self.do_send_request_raw(message_id, call, action).await;
 
-        match response {
-             Ok(value) => {
-                println!("{}", value.current_time); 
-                
-             }
-            _ => Ok(())
+        let response = self
+            .ocpp_deque
+            .do_send_request::<BootNotificationRequest1_6, BootNotificationResponse1_6>(
+                boot_notification,
+                "BootNotification",
+            )
+            .await;
+
+        //  let response = self.ocpp_deque.do_send_request_raw::<BootNotificationResponse1_6>(message_id, call, "BootNotification").await;
+
+        if let Ok(Ok(value)) = response {
+            println!("{}", value.current_time);
         }
-
-
-       
-       
-
         Ok(())
     }
 
@@ -102,14 +132,16 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
 #[async_trait]
 impl OCPPCommunicator for OCPPCommunicator2_0_1 {
     async fn send_boot_notification(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let data: tokio::sync::MutexGuard<'_, CPData> = self.data.lock().await;
+
         let _ = self
             .client
             .send_boot_notification(BootNotificationRequest2_0_1 {
                 charging_station:
                     rust_ocpp::v2_0_1::datatypes::charging_station_type::ChargingStationType {
-                        model: self.data.model.clone(),
-                        vendor_name: self.data.vendor.clone(),
-                        serial_number: Some(self.data.serial.clone()),
+                        model: data.model.clone(),
+                        vendor_name: data.vendor.clone(),
+                        serial_number: Some(data.serial.clone()),
                         ..Default::default()
                     },
                 ..Default::default()
@@ -136,11 +168,12 @@ struct CPData {
     serial: String,
     model: String,
     vendor: String,
+    booted: bool,
 }
 
 struct CP {
     communicator: Arc<Mutex<Option<Box<dyn OCPPCommunicator>>>>,
-    data: Arc<CPData>,
+    data: Arc<Mutex<CPData>>,
     client: Option<ocpp_client::Client>,
 }
 
@@ -153,11 +186,15 @@ impl CP {
         &mut self,
         address: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let data = self.data.lock().await;
         let options: ConnectOptions = ConnectOptions {
-            username: self.data.username.as_deref(),
-            password: self.data.password.as_deref(),
+            username: data.username.as_deref(),
+            password: data.password.as_deref(),
         };
+
         let client = connect(address, Some(options)).await?;
+        drop(data);
+
         // Create mpsc channel
         let (tx, mut rx) = mpsc::channel::<String>(100);
 
@@ -167,6 +204,7 @@ impl CP {
                     client: inner.clone(),
                     data: self.data.clone(),
                     tx: Some(tx),
+                    ocpp_deque: OCPPDeque::new(inner.clone().base.clone()),
                 })
                     as Box<dyn OCPPCommunicator>);
                 println!("Connected using OCPP 1.6");
@@ -176,6 +214,7 @@ impl CP {
                     client: inner.clone(),
                     data: self.data.clone(),
                     tx: Some(tx),
+                    ocpp_deque: OCPPDeque::new(inner.clone().base.clone()),
                 })
                     as Box<dyn OCPPCommunicator>);
                 println!("Connected using OCPP 2.0.1");
@@ -228,13 +267,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut cp1 = CP {
         communicator: Arc::new(Mutex::new(None)),
         client: None,
-        data: Arc::new(CPData {
+        data: Arc::new(Mutex::new(CPData {
             username: Some("RustTest002".to_string()),
             password: Some("RustyRust".to_string()),
             serial: "RustTest002".to_string(),
             model: "RustModel".to_string(),
             vendor: "RustVendor".to_string(),
-        }),
+            booted: false,
+        })),
     };
 
     cp1.run("wss://ocpp.coreevi.com/ocpp1.6/65/RustTest002")
