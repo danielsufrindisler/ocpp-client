@@ -1,4 +1,5 @@
 use crate::ocpp_2_0_1::raw_ocpp_2_0_1_error::RawOcpp2_0_1Error;
+use crate::raw_ocpp_common_call::RawOcppCommonError;
 use serde_json::{json, Value};
 use std::fmt;
 use std::fmt::Display;
@@ -381,6 +382,65 @@ impl From<RawOcpp2_0_1Error> for OCPP2_0_1Error {
                 details: value.4,
             },
             "GenericError" => Self::GenericError {
+                description: value.3,
+                details: value.4,
+            },
+            _ => Self::GenericError {
+                description: value.3,
+                details: value.4,
+            },
+        }
+    }
+}
+
+impl From<RawOcppCommonError> for OCPP2_0_1Error {
+    fn from(value: RawOcppCommonError) -> Self {
+        match value.2.as_str() {
+            "FormatViolation" => Self::FormatViolation {
+                description: value.3,
+                details: value.4,
+            },
+            "GenericError" => Self::GenericError {
+                description: value.3,
+                details: value.4,
+            },
+            "InternalError" => Self::InternalError {
+                description: value.3,
+                details: value.4,
+            },
+            "MessageTypeNotSupported" => Self::MessageTypeNotSupported {
+                description: value.3,
+                details: value.4,
+            },
+            "NotImplemented" => Self::NotImplemented {
+                description: value.3,
+                details: value.4,
+            },
+            "NotSupported" => Self::NotSupported {
+                description: value.3,
+                details: value.4,
+            },
+            "OccurrenceConstraintViolation" => Self::OccurrenceConstraintViolation {
+                description: value.3,
+                details: value.4,
+            },
+            "PropertyConstraintViolation" => Self::PropertyConstraintViolation {
+                description: value.3,
+                details: value.4,
+            },
+            "ProtocolError" => Self::ProtocolError {
+                description: value.3,
+                details: value.4,
+            },
+            "RpcFrameworkError" => Self::RpcFrameworkError {
+                description: value.3,
+                details: value.4,
+            },
+            "SecurityError" => Self::SecurityError {
+                description: value.3,
+                details: value.4,
+            },
+            "TypeConstraintViolation" => Self::TypeConstraintViolation {
                 description: value.3,
                 details: value.4,
             },

@@ -1,8 +1,7 @@
+use crate::common_client::CommonOcppClientBase;
 use crate::ocpp_1_6::OCPP1_6Error;
-use crate::ocpp_2_0_1::raw_ocpp_2_0_1_call::RawOcpp2_0_1Call;
-use crate::ocpp_2_0_1::raw_ocpp_2_0_1_error::RawOcpp2_0_1Error;
-use crate::ocpp_2_0_1::raw_ocpp_2_0_1_result::RawOcpp2_0_1Result;
 use crate::ocpp_2_0_1::OCPP2_0_1Error;
+use crate::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError, RawOcppCommonResult};
 use crate::reconnectws::ReconnectWs;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt, TryStreamExt};
@@ -177,150 +176,19 @@ use uuid::Uuid;
 /// OCPP 2.0.1 client
 #[derive(Clone)]
 pub struct OCPP2_0_1Client {
-    sink: Arc<Mutex<SplitSink<ReconnectWs, Message>>>,
-    response_channels: Arc<Mutex<BTreeMap<Uuid, oneshot::Sender<Result<Value, OCPP2_0_1Error>>>>>,
-    request_senders: Arc<Mutex<BTreeMap<String, mpsc::Sender<RawOcpp2_0_1Call>>>>,
-    pong_channels: Arc<Mutex<VecDeque<oneshot::Sender<()>>>>,
-    ping_sender: Sender<()>,
-    timeout: Duration,
+    pub base: CommonOcppClientBase,
 }
 
 impl OCPP2_0_1Client {
     pub(crate) fn new(stream: ReconnectWs) -> Self {
-        let (sink, stream) = stream.split();
-        let sink = Arc::new(Mutex::new(sink));
-        let response_channels = Arc::new(Mutex::new(BTreeMap::<
-            Uuid,
-            oneshot::Sender<Result<Value, OCPP2_0_1Error>>,
-        >::new()));
-        let response_channels2 = Arc::clone(&response_channels);
-
-        let pong_channels = Arc::new(Mutex::new(VecDeque::<oneshot::Sender<()>>::new()));
-        let pong_channels2 = Arc::clone(&pong_channels);
-        let request_senders: Arc<Mutex<BTreeMap<String, mpsc::Sender<RawOcpp2_0_1Call>>>> =
-            Arc::new(Mutex::new(BTreeMap::new()));
-
-        let request_senders2 = request_senders.clone();
-
-        let (ping_sender, _) = tokio::sync::broadcast::channel(10);
-        let ping_sender2 = ping_sender.clone();
-        let sink2 = sink.clone();
-
-        tokio::spawn(async move {
-            stream
-                .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e))
-                .try_for_each(|message| {
-                    let request_senders = request_senders2.clone();
-                    let response_channels2 = response_channels2.clone();
-                    let ping_sender = ping_sender2.clone();
-                    let sink = sink2.clone();
-                    let pong_channels2 = pong_channels2.clone();{
-                        async move {
-                            match message {
-                                Message::Text(raw_payload) => {
-                                    let raw_value = serde_json::from_str(&raw_payload)?;
-
-                                    match raw_value {
-                                        Value::Array(list) => {
-                                            if let Some(message_type_item) = list.get(0) {
-                                                if let Value::Number(message_type_raw) = message_type_item {
-                                                    if let Some(message_type) = message_type_raw.as_u64() {
-                                                        match message_type {
-                                                            // CALL
-                                                            2 => {
-                                                                let call: RawOcpp2_0_1Call =
-                                                                    serde_json::from_str(&raw_payload).unwrap();
-                                                                let action  = &call.2;
-                                                                let sender_opt = {
-                                                                    let lock = request_senders.lock().await;
-                                                                    lock.get(action).cloned()
-                                                                };
-                                                                match sender_opt {
-                                                                    None => {
-                                                                        let error = OCPP1_6Error::new_not_implemented(&format!("Action '{}' is not implemented", action));
-                                                                        let payload = serde_json::to_string(&RawOcpp2_0_1Error(4, call.1.to_string(), error.code().to_string(), error.description().to_string(), error.details().to_owned())).unwrap();
-                                                                        let mut lock = sink.lock().await;
-                                                                        if let Err(err) = lock.send(Message::Text(payload)).await {
-                                                                            println!("Failed to send response: {:?}", err)
-                                                                        }
-                                                                    }
-                                                                    Some(sender) => {
-                                                                        if let Err(err) = sender.send(call).await {
-                                                                            println!("Error sending request: {:?}", err);
-                                                                        };
-                                                                    }
-                                                                }
-
-                                                            },
-                                                            // RESPONSE
-                                                            3 => {
-                                                                let result: RawOcpp2_0_1Result =
-                                                                    serde_json::from_str(&raw_payload).unwrap();
-                                                                let mut lock = response_channels2.lock().await;
-                                                                if let Some(sender) = lock.remove(&Uuid::parse_str(&result.1)?) {
-                                                                    sender.send(Ok(result.2)).unwrap();
-                                                                }
-                                                            },
-                                                            // ERROR
-                                                            4 => {
-                                                                let error: RawOcpp2_0_1Error =
-                                                                    serde_json::from_str(&raw_payload)?;
-                                                                let mut lock = response_channels2.lock().await;
-                                                                if let Some(sender) = lock.remove(&Uuid::parse_str(&error.1)?) {
-                                                                    sender.send(Err(error.into())).unwrap();
-                                                                }
-                                                            },
-                                                            _ => println!("Unknown message type"),
-                                                        }
-                                                    } else {
-                                                        println!("The message type has to be an integer, it cant have decimals")
-                                                    }
-                                                } else {
-                                                    println!("The first item in the array was not a number")
-                                                }
-                                            } else {
-                                                println!("The root list was empty")
-                                            }
-                                        }
-                                        _ => println!("A message should be an array of items"),
-                                    }
-
-                                }
-                                Message::Ping(_) => {
-                                    if ping_sender.receiver_count() > 0 {
-                                        if let Err(err) = ping_sender.send(()) {
-                                            println!("Error sending websocket ping: {:?}", err);
-                                        };
-                                    }
-                                }
-                                Message::Pong(_) => {
-                                    let mut lock = pong_channels2.lock().await;
-                                    if let Some(sender) = lock.pop_back() {
-                                        sender.send(()).unwrap();
-                                    }
-                                }
-                                _ => {}
-                            }
-                            Ok(())
-                        }
-                    }
-                }).await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        });
-
         Self {
-            sink,
-            response_channels,
-            request_senders,
-            pong_channels,
-            ping_sender,
-            timeout: Duration::from_secs(5),
+            base: CommonOcppClientBase::new(stream),
         }
     }
 
     /// Disconnect from the server
     pub async fn disconnect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut lock = self.sink.lock().await;
+        let mut lock = self.base.sink.lock().await;
         lock.close().await?;
         Ok(())
     }
@@ -588,13 +456,13 @@ impl OCPP2_0_1Client {
 
     pub async fn send_ping(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
-            let mut lock = self.sink.lock().await;
+            let mut lock = self.base.sink.lock().await;
             lock.send(Message::Ping(vec![])).await?;
         }
 
         let (s, r) = oneshot::channel();
         {
-            let mut pong_channels = self.pong_channels.lock().await;
+            let mut pong_channels = self.base.pong_channels.lock().await;
             pong_channels.push_front(s);
         }
 
@@ -1447,7 +1315,7 @@ impl OCPP2_0_1Client {
         &self,
         mut callback: F,
     ) {
-        let mut recv = self.ping_sender.subscribe();
+        let mut recv = self.base.ping_sender.subscribe();
 
         let s = self.clone();
         tokio::spawn(async move {
@@ -1469,7 +1337,7 @@ impl OCPP2_0_1Client {
     ) {
         let (sender, mut recv) = mpsc::channel(1000);
         {
-            let mut lock = self.request_senders.lock().await;
+            let mut lock = self.base.request_senders.lock().await;
             lock.insert(action.to_string(), sender);
         }
 
@@ -1502,12 +1370,12 @@ impl OCPP2_0_1Client {
     ) -> Result<P, Box<dyn std::error::Error + Send + Sync>> {
         let (sender, mut recv) = mpsc::channel(1000);
         {
-            let mut lock = self.request_senders.lock().await;
+            let mut lock = self.base.request_senders.lock().await;
             lock.insert(action.to_string(), sender);
         }
 
         let s = self.clone();
-        match timeout(self.timeout, recv.recv()).await {
+        match timeout(self.base.timeout, recv.recv()).await {
             Ok(opt) => match opt {
                 None => Err("No call received".into()),
                 Some(call) => match serde_json::from_value(call.3.clone()) {
@@ -1532,13 +1400,13 @@ impl OCPP2_0_1Client {
         message_id: &str,
     ) {
         let payload = match response {
-            Ok(r) => serde_json::to_string(&RawOcpp2_0_1Result(
+            Ok(r) => serde_json::to_string(&RawOcppCommonResult(
                 3,
                 message_id.to_string(),
                 serde_json::to_value(r).unwrap(),
             ))
             .unwrap(),
-            Err(e) => serde_json::to_string(&RawOcpp2_0_1Error(
+            Err(e) => serde_json::to_string(&RawOcppCommonError(
                 4,
                 message_id.to_string(),
                 e.code().to_string(),
@@ -1548,7 +1416,7 @@ impl OCPP2_0_1Client {
             .unwrap(),
         };
 
-        let mut lock = self.sink.lock().await;
+        let mut lock = self.base.sink.lock().await;
         if let Err(err) = lock.send(Message::Text(payload)).await {
             println!("Failed to send response: {:?}", err)
         }
@@ -1559,30 +1427,13 @@ impl OCPP2_0_1Client {
         request: P,
         action: &str,
     ) -> Result<Result<R, OCPP2_0_1Error>, Box<dyn std::error::Error + Send + Sync>> {
-        let message_id = Uuid::new_v4();
-
-        let call = RawOcpp2_0_1Call(
-            2,
-            message_id.to_string(),
-            action.to_string(),
-            serde_json::to_value(&request)?,
-        );
-
-        {
-            let mut lock = self.sink.lock().await;
-            lock.send(Message::Text(serde_json::to_string(&call)?))
-                .await?;
-        }
-
-        let (s, r) = oneshot::channel();
-        {
-            let mut response_channels = self.response_channels.lock().await;
-            response_channels.insert(message_id, s);
-        }
-
-        match r.await? {
-            Ok(value) => Ok(Ok(serde_json::from_value(value)?)),
-            Err(e) => Ok(Err(e)),
+        let response = self.base.do_send_request::<P, R>(request, action).await;
+        match response {
+            Ok(res) => match res {
+                Ok(r) => Ok(Ok(r)),
+                Err(e) => Ok(Err(e.into())),
+            },
+            Err(e) => Err(e),
         }
     }
 }
