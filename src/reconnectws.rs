@@ -28,7 +28,7 @@ impl UnderlyingStream<Request<()>, Result<Message, WsError>, WsError> for MyWs {
             println!("Connecting to {}", addr.uri());
             //    println!("Custom backtrace: {}", Backtrace::force_capture());
 
-            let (ws_connection, response) = connect_async(addr).await.unwrap();
+            let (ws_connection, response) = connect_async(addr).await?;
             Ok((ws_connection, response))
         })
     }
