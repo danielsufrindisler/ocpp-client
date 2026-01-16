@@ -66,10 +66,6 @@ cargo test
 
 If you add new functionality, please write tests to cover it. This helps us maintain a high-quality library.
 
-## Code of Conduct
-
-This project adheres to the [Contributor Covenant Code of Conduct](https://www.contributor-covenant.org/version/2/0/code_of_conduct/). By participating, you are expected to uphold this code. Please report unacceptable behavior to [hello@flowion.app](mailto:hello@flowion.app).
-
 ## Thank You!
 
 Thank you for considering contributing to the OCPP Client! Your time and effort are greatly appreciated, and we are excited to see your contributions.
