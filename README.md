@@ -1,8 +1,5 @@
-# OCPP Client
-
-[![Crates.io](https://img.shields.io/crates/v/ocpp-client)](https://crates.io/crates/ocpp-client)
-[![Documentation](https://docs.rs/ocpp-client/badge.svg)](https://docs.rs/ocpp-client)
-[![.github/workflows/ci.yaml](https://github.com/flowionab/ocpp-client/actions/workflows/ci.yaml/badge.svg)](https://github.com/flowionab/ocpp-client/actions/workflows/ci.yaml)
+# Acknowledgement
+This was forked from https://github.com/flowionab/ocpp-client A huge portion of this repository is still in the original format from the flowionab version and wouldn't be where it is today without a great base project.  
 
 ## Overview
 
@@ -27,38 +24,28 @@ ocpp-client = "0.1"
 
 ## Usage
 
-Here's a simple example to get you started:
+see examples/connect.rs
 
-```rust
-use ocpp_client::connect;
+## Organization / Architecture
 
-#[tokio::main]
-async fn main() {
-    let client = connect("wss://my-csms.com/CHARGER_IDENTITY").await?;
-    
-    match client {
-        OCPP1_6(client) => {
-            // Do 1.6 specific operations
-        },
-        OCPP2_0_1(client) => {
-            // Do 2.0.1 specific operations
-        },
-    }
-}
-```
+/srs/ocpp_1_6, src/ocpp_2_0_1
+functions to send messages to a CPMS, or to handle requests from a CPMS
 
-## Documentation
+/src/common_client
+common functions to send raw messages to a CPMS and receive raw messages frp, a CPMS
 
-The full documentation is available on [docs.rs](https://docs.rs/ocpp-client).
+/src/reconnectws
+stream-reconnect websocket details so that a client can connect to a server, and keep reconnecting as needed
 
-## Examples
+/src/ocpp_deque.rs 
+This *will* be a custom ocpp queue with the ability to have different retry strategies, different persistence, and different priorities for different message types
+for ocpp1.6 it will also handle changing transaction ids from an internal placeholder to actual values
 
-Check out the [examples](https://github.com/flowionab/ocpp-client/tree/main/examples) directory for more usage examples.
+/examples/connect.rs
+This is the main file for now.  It will be split up into several different modules in the future.  It has the business logic for a charger, and ocpp1.6 and ocpp2.0.1 specific message senders and handlers.  The goal is to have the same business logic, but slightly different communication between the different ocpp versions.  
 
-## Contributing
-
-Contributions are welcome! Please see the [CONTRIBUTING.md](https://github.com/flowionab/ocpp-client/blob/main/CONTRIBUTING.md) for more details.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](https://github.com/flowionab/ocpp-client/blob/main/LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](https://github.com/danielsufrin-disler/ocpp-client/blob/main/LICENSE) file for details.
+
