@@ -30,14 +30,14 @@ trait OCPPCommunicator: Send + Sync {
 struct OCPPCommunicator1_6 {
     client: OCPP1_6Client,
     data: Arc<Mutex<CPData>>,
-    tx: Option<mpsc::Sender<String>>,
+    trigger_message_requests: Option<mpsc::Sender<String>>,
     ocpp_deque: OCPPDeque,
 }
 
 struct OCPPCommunicator2_0_1 {
     client: OCPP2_0_1Client,
     data: Arc<Mutex<CPData>>,
-    tx: Option<mpsc::Sender<String>>,
+    trigger_message_requests: Option<mpsc::Sender<String>>,
     ocpp_deque: OCPPDeque,
 }
 
@@ -76,25 +76,15 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             .handle_on_response(callback, "BootNotification")
             .await;
 
-        let call: RawOcppCommonCall = RawOcppCommonCall(
-            2,
-            message_id.to_string(),
-            "BootNotification".to_string(),
-            serde_json::to_value(&boot_notification)?,
-        );
-
         let response = self
             .ocpp_deque
-            .do_send_request::<BootNotificationRequest1_6, BootNotificationResponse1_6>(
-                boot_notification,
-                "BootNotification",
-            )
+            .do_send_request_queued(boot_notification, "BootNotification")
             .await;
 
         //  let response = self.ocpp_deque.do_send_request_raw::<BootNotificationResponse1_6>(message_id, call, "BootNotification").await;
 
-        if let Ok(Ok(value)) = response {
-            println!("{}", value.current_time);
+        if let Ok(_) = response {
+            println!("Boot is schedule");
         }
         Ok(())
     }
@@ -108,13 +98,13 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
     ) -> Result<TriggerMessageResponse, Box<dyn std::error::Error + Send + Sync>> {
         // Register TriggerMessage callback for OCPP 1.6
         let data = self.data.clone();
-        let tx = self.tx.clone();
+        let trigger_message_requests = self.trigger_message_requests.clone();
         let callback = move |_request: TriggerMessageRequest, _client: OCPP1_6Client| {
             let _data = data.clone();
-            let tx = tx.clone();
+            let trigger_message_requests = trigger_message_requests.clone();
             async move {
                 println!("Received TriggerMessage from server");
-                if let Some(sender) = tx {
+                if let Some(sender) = trigger_message_requests {
                     let _ = sender.send("boot_notification".to_string()).await;
                 }
                 Ok(TriggerMessageResponse {
@@ -196,14 +186,14 @@ impl CP {
         drop(data);
 
         // Create mpsc channel
-        let (tx, mut rx) = mpsc::channel::<String>(100);
+        let (trigger_message_requests, mut rx) = mpsc::channel::<String>(100);
 
         match &client {
             OCPP1_6(inner) => {
                 *self.communicator.lock().await = Some(Box::new(OCPPCommunicator1_6 {
                     client: inner.clone(),
                     data: self.data.clone(),
-                    tx: Some(tx),
+                    trigger_message_requests: Some(trigger_message_requests),
                     ocpp_deque: OCPPDeque::new(inner.clone().base.clone()),
                 })
                     as Box<dyn OCPPCommunicator>);
@@ -213,7 +203,7 @@ impl CP {
                 *self.communicator.lock().await = Some(Box::new(OCPPCommunicator2_0_1 {
                     client: inner.clone(),
                     data: self.data.clone(),
-                    tx: Some(tx),
+                    trigger_message_requests: Some(trigger_message_requests),
                     ocpp_deque: OCPPDeque::new(inner.clone().base.clone()),
                 })
                     as Box<dyn OCPPCommunicator>);
