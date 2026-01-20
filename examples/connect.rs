@@ -1,165 +1,15 @@
+use ocpp_client::communicator1_6::OCPPCommunicator1_6;
+use ocpp_client::communicator2_0_1::OCPPCommunicator2_0_1;
+use ocpp_client::communicator_trait::OCPPCommunicator;
+use ocpp_client::cp_data::{
+    AuthorizationType, CPData, ChargeSession, ChargeSessionReference, MessageReference,
+    PlugAndCharge, TransitionGraph, UserStateTransitions, UserTransition::*, EV, EVSE, RFID,
+};
+use ocpp_client::ocpp_deque::OCPPDeque;
 use ocpp_client::Client::{OCPP1_6, OCPP2_0_1};
 use ocpp_client::{connect, ConnectOptions};
-use rust_ocpp::v1_6::messages::boot_notification::{
-    self, BootNotificationRequest as BootNotificationRequest1_6,
-    BootNotificationResponse as BootNotificationResponse1_6,
-};
-use rust_ocpp::v2_0_1::messages::boot_notification::BootNotificationRequest as BootNotificationRequest2_0_1;
-
-use async_trait::async_trait;
-use ocpp_client::ocpp_1_6::OCPP1_6Client;
-use ocpp_client::ocpp_2_0_1::OCPP2_0_1Client;
-use ocpp_client::ocpp_deque::OCPPDeque;
-use ocpp_client::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError};
-use rust_ocpp::v1_6::messages::trigger_message::{TriggerMessageRequest, TriggerMessageResponse};
-use rust_ocpp::v1_6::types::TriggerMessageStatus;
-use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use uuid::Uuid;
-
-#[async_trait]
-trait OCPPCommunicator: Send + Sync {
-    async fn send_boot_notification(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    async fn register_trigger_message(
-        &self,
-    ) -> Result<TriggerMessageResponse, Box<dyn std::error::Error + Send + Sync>>;
-    async fn register_messages(&self) -> ();
-}
-
-struct OCPPCommunicator1_6 {
-    client: OCPP1_6Client,
-    data: Arc<Mutex<CPData>>,
-    trigger_message_requests: Option<mpsc::Sender<String>>,
-    ocpp_deque: OCPPDeque,
-}
-
-struct OCPPCommunicator2_0_1 {
-    client: OCPP2_0_1Client,
-    data: Arc<Mutex<CPData>>,
-    trigger_message_requests: Option<mpsc::Sender<String>>,
-    ocpp_deque: OCPPDeque,
-}
-
-#[async_trait]
-impl OCPPCommunicator for OCPPCommunicator1_6 {
-    async fn send_boot_notification(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let data: tokio::sync::MutexGuard<'_, CPData> = self.data.lock().await;
-        let boot_notification: BootNotificationRequest1_6 = BootNotificationRequest1_6 {
-            charge_point_model: data.model.clone(),
-            charge_point_vendor: data.vendor.clone(),
-            charge_point_serial_number: Some(data.serial.clone()),
-            ..Default::default()
-        };
-        let message_id = Uuid::new_v4();
-
-        let cp_data_arc = Arc::clone(&self.data);
-        let callback = move |call: RawOcppCommonCall,
-                             ocpp_result: Result<Value, RawOcppCommonError>,
-                             self_clone: OCPPDeque| {
-            println!("BootNotification callback invoked");
-            let cp_data_arc2 = Arc::clone(&cp_data_arc);
-            async move {
-                println!("BootNotification callback invoked1");
-
-                println!(
-                    "BootNotification response received for message ID {}: {:?}",
-                    call.1, ocpp_result
-                );
-                let mut lock = cp_data_arc2.lock().await;
-                lock.booted = true;
-                println!("Booted set to true");
-            }
-        };
-
-        self.ocpp_deque
-            .handle_on_response(callback, "BootNotification")
-            .await;
-
-        let response = self
-            .ocpp_deque
-            .do_send_request_queued(boot_notification, "BootNotification")
-            .await;
-
-        //  let response = self.ocpp_deque.do_send_request_raw::<BootNotificationResponse1_6>(message_id, call, "BootNotification").await;
-
-        if let Ok(_) = response {
-            println!("Boot is schedule");
-        }
-        Ok(())
-    }
-
-    async fn register_messages(&self) -> () {
-        let _ = self.register_trigger_message().await;
-    }
-
-    async fn register_trigger_message(
-        &self,
-    ) -> Result<TriggerMessageResponse, Box<dyn std::error::Error + Send + Sync>> {
-        // Register TriggerMessage callback for OCPP 1.6
-        let data = self.data.clone();
-        let trigger_message_requests = self.trigger_message_requests.clone();
-        let callback = move |_request: TriggerMessageRequest, _client: OCPP1_6Client| {
-            let _data = data.clone();
-            let trigger_message_requests = trigger_message_requests.clone();
-            async move {
-                println!("Received TriggerMessage from server");
-                if let Some(sender) = trigger_message_requests {
-                    let _ = sender.send("boot_notification".to_string()).await;
-                }
-                Ok(TriggerMessageResponse {
-                    status: TriggerMessageStatus::Accepted,
-                })
-            }
-        };
-        self.client.on_trigger_message(callback).await;
-        Ok(TriggerMessageResponse {
-            status: TriggerMessageStatus::Accepted,
-        })
-    }
-}
-
-#[async_trait]
-impl OCPPCommunicator for OCPPCommunicator2_0_1 {
-    async fn send_boot_notification(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let data: tokio::sync::MutexGuard<'_, CPData> = self.data.lock().await;
-
-        let _ = self
-            .client
-            .send_boot_notification(BootNotificationRequest2_0_1 {
-                charging_station:
-                    rust_ocpp::v2_0_1::datatypes::charging_station_type::ChargingStationType {
-                        model: data.model.clone(),
-                        vendor_name: data.vendor.clone(),
-                        serial_number: Some(data.serial.clone()),
-                        ..Default::default()
-                    },
-                ..Default::default()
-            })
-            .await;
-        Ok(())
-    }
-    async fn register_messages(&self) -> () {
-        let _ = self.register_trigger_message().await;
-    }
-
-    async fn register_trigger_message(
-        &self,
-    ) -> Result<TriggerMessageResponse, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(TriggerMessageResponse {
-            status: TriggerMessageStatus::Accepted,
-        })
-    }
-}
-
-struct CPData {
-    username: Option<String>,
-    password: Option<String>,
-    serial: String,
-    model: String,
-    vendor: String,
-    booted: bool,
-}
 
 struct CP {
     communicator: Arc<Mutex<Option<Box<dyn OCPPCommunicator>>>>,
@@ -231,6 +81,59 @@ impl CP {
             comm.send_boot_notification().await?
         }
 
+        let evse_count = self.data.lock().await.evses.len();
+        for i in 0..evse_count {
+            let cp_data_clone = self.data.clone();
+
+            let comm_arc = self.communicator.clone();
+            println!(
+                "spawning evse task for EVSE with {} connector(s)",
+                cp_data_clone.lock().await.evses[i].connector_ids.len()
+            );
+
+            tokio::spawn(async move {
+                let mut t = 0;
+                println!(
+                    "spawned evse task for EVSE with {} connector(s)",
+                    cp_data_clone.lock().await.evses[i].connector_ids.len()
+                );
+                let comm_arc2 = comm_arc.clone();
+                let session_count = cp_data_clone.lock().await.evses[i].charge_sessions.len();
+                for j in 0..session_count {
+                    let transitions = &cp_data_clone.lock().await.evses[i].charge_sessions[j]
+                        .user_transitions
+                        .transitions
+                        .clone();
+                    for transition in transitions {
+                        println!("2");
+
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            transition.duration as u64,
+                        ))
+                        .await;
+                        t += transition.duration;
+
+                        println!("Transitioning at time {} {:?}", t, transition.transition);
+                        if let Some(comm) = comm_arc2.lock().await.as_ref() {
+                            let reference: MessageReference =
+                                MessageReference::ChargeSession(ChargeSessionReference {
+                                    evse_index: i,
+                                    charge_session_index: j,
+                                });
+                            let _ = comm
+                                .send_authorize(
+                                    cp_data_clone.lock().await.evses[i].charge_sessions[j]
+                                        .authorization
+                                        .clone(),
+                                    reference,
+                                )
+                                .await;
+                        }
+                    }
+                }
+            });
+        }
+
         println!("Connected! Waiting for messages...");
         println!("Press Ctrl-C to exit");
         tokio::signal::ctrl_c().await?;
@@ -254,6 +157,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     env_logger::init();
 
+    let auth1 = AuthorizationType::RFID(RFID {
+        id_tag: "TAG123".to_string(),
+    });
+
+    let ev: EV = EV {
+        power_vs_soc: vec![(0.0, 50.0), (80.0, 30.0), (100.0, 0.0)],
+    };
+
+    let cs1 = ChargeSession {
+        ev: ev,
+        authorization: auth1,
+        plugged_in: false,
+        authorized: false,
+        started: false,
+        user_transitions: TransitionGraph {
+            transitions: vec![
+                UserStateTransitions {
+                    duration: 5,
+                    transition: LocalStart,
+                },
+                UserStateTransitions {
+                    duration: 10,
+                    transition: Plug,
+                },
+                UserStateTransitions {
+                    duration: 100,
+                    transition: Unplug,
+                },
+            ],
+        },
+    };
+
+    let evse: EVSE = EVSE {
+        is_ac: false,
+        connector_ids: vec![1, 2],
+        charge_sessions: vec![cs1],
+    };
+
     let mut cp1 = CP {
         communicator: Arc::new(Mutex::new(None)),
         client: None,
@@ -264,6 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             model: "RustModel".to_string(),
             vendor: "RustVendor".to_string(),
             booted: false,
+            evses: vec![evse],
         })),
     };
 
