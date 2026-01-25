@@ -6,7 +6,7 @@ use std::time::Duration;
 use stream_reconnect::ReconnectOptions;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, SEC_WEBSOCKET_EXTENSIONS, HeaderValue};
 use tokio_tungstenite::tungstenite::http::Request;
 use url::Url;
 
@@ -21,7 +21,8 @@ pub async fn connect(
     address: &str,
     options: Option<ConnectOptions<'_>>,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    let (stream, protocol) = setup_socket(address, "ocpp1.6, ocpp2.0.1", options).await?;
+    //todo add back ocpp1.6
+    let (stream, protocol) = setup_socket(address, "ocpp2.0.1", options).await?;
 
     match protocol.as_str() {
         #[cfg(feature = "ocpp_1_6")]
@@ -84,9 +85,22 @@ async fn setup_socket(
         });
 
     let mut request: Request<()> = address.to_string().into_client_request()?;
+
+
+
+
+
     request
         .headers_mut()
         .insert(SEC_WEBSOCKET_PROTOCOL, protocols.parse()?);
+ 
+    request
+        .headers_mut()
+        .insert(SEC_WEBSOCKET_VERSION, HeaderValue::from_static("13"));
+
+
+
+
     if let Some(options) = options {
         if let Some(username) = options.username {
             let data = format!("{}:{}", username, options.password.unwrap_or(""));
@@ -104,6 +118,9 @@ async fn setup_socket(
     let protocol = headers
         .get(SEC_WEBSOCKET_PROTOCOL)
         .ok_or("No OCPP protocol negotiated")?;
+
+
+    println!("{:?}", headers);
 
     Ok((stream, protocol.to_str()?.to_string()))
 }

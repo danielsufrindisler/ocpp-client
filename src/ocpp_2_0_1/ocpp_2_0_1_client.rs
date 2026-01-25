@@ -172,6 +172,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
+use tokio_tungstenite::tungstenite::Utf8Bytes;
 
 /// OCPP 2.0.1 client
 #[derive(Clone)]
@@ -457,7 +458,7 @@ impl OCPP2_0_1Client {
     pub async fn send_ping(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
             let mut lock = self.base.sink.lock().await;
-            lock.send(Message::Ping(vec![])).await?;
+            lock.send(Message::Ping(vec![].into())).await?;
         }
 
         let (s, r) = oneshot::channel();
@@ -1417,7 +1418,7 @@ impl OCPP2_0_1Client {
         };
 
         let mut lock = self.base.sink.lock().await;
-        if let Err(err) = lock.send(Message::Text(payload)).await {
+        if let Err(err) = lock.send(Message::Text(payload.into())).await {
             println!("Failed to send response: {:?}", err)
         }
     }
