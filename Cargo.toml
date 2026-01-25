@@ -18,18 +18,17 @@ test = []
 rust-ocpp = { version = "2.0", default-features = false }
 tokio = { version = "1", features = ["sync", "rt", "time"] }
 futures = "0.3"
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots", "deflate"], git="https://github.com/danielsufrindisler/tokio-tungstenite.git" }
 url = "2.5"
 rustls = "0.23"
 serde = "1.0"
 serde_json = "1.0.120"
 uuid = { version = "1.10.0", features = ["v4"] }
 base64 = "0.22"
-# stream-reconnect = { git = "https://github.com/danielsufrindisler/stream-reconnect.git" }
- stream-reconnect = { path = "../stream-reconnect" }
+stream-reconnect = { git = "https://github.com/danielsufrindisler/stream-reconnect.git" }
+# stream-reconnect = { path = "../stream-reconnect" }
 async-trait = "0.1.89"
 env_logger = "0.11"
-
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

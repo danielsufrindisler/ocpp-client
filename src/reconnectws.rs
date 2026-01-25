@@ -9,7 +9,9 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::handshake::client::Response;
 use tokio_tungstenite::tungstenite::http::Request;
 use tokio_tungstenite::tungstenite::{error::Error as WsError, Message};
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream, tungstenite::protocol::WebSocketConfig};
+use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig;
+
 
 pub struct MyWs {
     protocol: String,
@@ -27,8 +29,9 @@ impl UnderlyingStream<Request<()>, Result<Message, WsError>, WsError> for MyWs {
             // In this case, we are trying to connect to the WebSocket endpoint
             println!("Connecting to {}", addr.uri());
             //    println!("Custom backtrace: {}", Backtrace::force_capture());
-
-            let (ws_connection, response) = connect_async(addr).await?;
+            let mut config = WebSocketConfig::default();
+            config.extensions.permessage_deflate = Some(DeflateConfig::default());
+            let (ws_connection, response) = connect_async_with_config(addr, Some(config), false).await?;
             Ok((ws_connection, response))
         })
     }

@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
+use tokio_tungstenite::tungstenite::Utf8Bytes;
 
 /// Common base for OCPP clients - holds shared state
 #[derive(Clone)]
@@ -158,7 +159,7 @@ impl CommonOcppClientBase {
         {
             println!("Sending {:?}", call);
             let mut lock = self.sink.lock().await;
-            lock.send(Message::Text(serde_json::to_string(&call)?))
+            lock.send(Message::Text(Utf8Bytes::from(serde_json::to_string(&call)?)))
                 .await?;
         }
 

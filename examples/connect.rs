@@ -2,8 +2,7 @@ use ocpp_client::communicator1_6::OCPPCommunicator1_6;
 use ocpp_client::communicator2_0_1::OCPPCommunicator2_0_1;
 use ocpp_client::communicator_trait::OCPPCommunicator;
 use ocpp_client::cp_data::{
-    AuthorizationType, CPData, ChargeSession, ChargeSessionReference, MessageReference,
-    PlugAndCharge, TransitionGraph, UserStateTransitions, UserTransition::*, EV, EVSE, RFID,
+    AuthorizationType, CPData, ChargeSession, ChargeSessionReference, EV, EVSE, MessageReference, PlugAndCharge, RFID, TransitionGraph, UserStateTransitions, UserTransition::{self, *}
 };
 use ocpp_client::ocpp_deque::OCPPDeque;
 use ocpp_client::Client::{OCPP1_6, OCPP2_0_1};
@@ -111,23 +110,26 @@ impl CP {
                             transition.duration as u64,
                         ))
                         .await;
-                        t += transition.duration;
 
+                        t += transition.duration;
                         println!("Transitioning at time {} {:?}", t, transition.transition);
-                        if let Some(comm) = comm_arc2.lock().await.as_ref() {
-                            let reference: MessageReference =
-                                MessageReference::ChargeSession(ChargeSessionReference {
-                                    evse_index: i,
-                                    charge_session_index: j,
-                                });
-                            let _ = comm
-                                .send_authorize(
-                                    cp_data_clone.lock().await.evses[i].charge_sessions[j]
-                                        .authorization
-                                        .clone(),
-                                    reference,
-                                )
-                                .await;
+
+                        if transition.transition == UserTransition::LocalStart {
+                            if let Some(comm) = comm_arc2.lock().await.as_ref() {
+                                let reference: MessageReference =
+                                    MessageReference::ChargeSession(ChargeSessionReference {
+                                        evse_index: i,
+                                        charge_session_index: j,
+                                    });
+                                let _ = comm
+                                    .send_authorize(
+                                        cp_data_clone.lock().await.evses[i].charge_sessions[j]
+                                            .authorization
+                                            .clone(),
+                                        reference,
+                                    )
+                                    .await;
+                            }
                         }
                     }
                 }
@@ -152,7 +154,7 @@ impl CP {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "debug");
+        std::env::set_var("RUST_LOG", "trace");
     }
 
     env_logger::init();
@@ -209,7 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })),
     };
 
-    cp1.run("wss://ocpp.coreevi.com/ocpp1.6/65/RustTest002")
+    cp1.run("wss://ocpp.coreevi.com/ocpp2.0.1/65/RustTest002")
         .await?;
 
     Ok(())
