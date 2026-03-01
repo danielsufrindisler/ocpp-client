@@ -1,19 +1,8 @@
 use crate::cp_data::{
-    AuthorizationType, CPData, ChargeSession, MessageReference, PlugAndCharge, EV, EVSE, RFID,
+    AuthorizationType, ChargeSessionReference, MessageReference,
 };
 use async_trait::async_trait;
-use rust_ocpp::v1_6::messages::boot_notification::{
-    self, BootNotificationRequest as BootNotificationRequest1_6,
-    BootNotificationResponse as BootNotificationResponse1_6,
-};
-use rust_ocpp::v1_6::messages::trigger_message::{TriggerMessageRequest, TriggerMessageResponse};
-use rust_ocpp::v1_6::types::TriggerMessageStatus;
-use rust_ocpp::v2_0_1::messages::boot_notification::BootNotificationRequest as BootNotificationRequest2_0_1;
-use rust_ocpp::v2_0_1::messages::status_notification::StatusNotificationRequest as StatusNotificationRequest2_0_1;
-use serde_json::Value;
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use uuid::Uuid;
+use rust_ocpp::v1_6::messages::trigger_message::TriggerMessageResponse;
 
 #[async_trait]
 pub trait OCPPCommunicator: Send + Sync {
@@ -27,4 +16,5 @@ pub trait OCPPCommunicator: Send + Sync {
         &self,
     ) -> Result<TriggerMessageResponse, Box<dyn std::error::Error + Send + Sync>>;
     async fn register_messages(&self) -> ();
+    async fn send_start_transaction(&self, reference: ChargeSessionReference) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }

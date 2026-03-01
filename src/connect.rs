@@ -6,7 +6,7 @@ use std::time::Duration;
 use stream_reconnect::ReconnectOptions;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, SEC_WEBSOCKET_EXTENSIONS, HeaderValue};
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, HeaderValue};
 use tokio_tungstenite::tungstenite::http::Request;
 use url::Url;
 
@@ -19,11 +19,12 @@ use crate::ocpp_2_0_1::OCPP2_0_1Client;
 /// Connect to an OCPP server using the best OCPP version available.
 pub async fn connect(
     address: &str,
+    supported_versions: &str,
     options: Option<ConnectOptions<'_>>,
 ) -> Result<Client, Box<dyn std::error::Error + Send + Sync>> {
-    //todo add back ocpp1.6
-    let (stream, protocol) = setup_socket(address, "ocpp2.0.1", options).await?;
-
+    //todo add back ocpp1.6, ocpp2.0.1
+     
+    let (stream, protocol) = setup_socket(address, supported_versions, options).await?;
     match protocol.as_str() {
         #[cfg(feature = "ocpp_1_6")]
         "ocpp1.6" => Ok(Client::OCPP1_6(OCPP1_6Client::new(stream))),
@@ -52,7 +53,7 @@ pub async fn connect_2_0_1(
     Ok(OCPP2_0_1Client::new(stream))
 }
 
-async fn setup_socket(
+pub async fn setup_socket(
     address: &str,
     protocols: &str,
     options: Option<ConnectOptions<'_>>,
