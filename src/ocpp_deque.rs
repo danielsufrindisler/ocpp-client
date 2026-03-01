@@ -1,8 +1,7 @@
 use crate::common_client::CommonOcppClientBase;
-use crate::cp_data::{ChargeSessionReference, MessageReference};
+use crate::cp_data::MessageReference;
 use crate::raw_ocpp_common_call::RawOcppCommonCall;
-use crate::raw_ocpp_common_call::{RawOcppCommonError, RawOcppCommonResult};
-use crate::Client::{OCPP1_6, OCPP2_0_1};
+use crate::raw_ocpp_common_call::RawOcppCommonError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -11,7 +10,7 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::{
     mpsc,
-    mpsc::{Receiver, Sender},
+    mpsc::Sender,
     Mutex,
 };
 use uuid::Uuid;
@@ -42,7 +41,7 @@ pub struct OCPPDeque {
 impl OCPPDeque {
     pub fn new(client: CommonOcppClientBase) -> Self {
         let (sender, mut receiver) = mpsc::channel::<OcppQueuedMessage>(1000);
-        let client2 = client.clone();
+        let _client2 = client.clone();
 
         let obj = Self {
             client: client,
@@ -74,32 +73,29 @@ impl OCPPDeque {
                 .do_send_request_raw(message_id, call.clone())
                 .await;
 
-            if let (Ok(ref ocpp_result)) = result {
-                if let mut callback_map = self.callback_map.lock().await {
-                    if let Some(callback) = &mut callback_map.get(&call.2) {
-                        println!("there is a callback for action {}", call.2);
+            if let Ok(ref ocpp_result) = result {
+                let callback_map = self.callback_map.lock().await;
+                if let Some(callback) = &mut callback_map.get(&call.2) {
+                    println!("there is a callback for action {}", call.2);
 
-                        callback
-                            .send((
-                                call,
-                                match ocpp_result {
-                                    Ok(value) => Ok(serde_json::to_value(value)?),
-                                    Err(e) => Err(e.clone()),
-                                },
-                                message_ref,
-                            ))
-                            .await;
-                    } else {
-                        println!("there no callback for action{}", call.2);
-                    }
+                    let _ = callback
+                        .send((
+                            call,
+                            match ocpp_result {
+                                Ok(value) => Ok(serde_json::to_value(value)?),
+                                Err(e) => Err(e.clone()),
+                            },
+                            message_ref,
+                        ))
+                        .await;
                 } else {
-                    println!("there no callback lock{}", call.2);
+                    println!("there no callback for action{}", call.2);
                 }
                 break result;
             }
 
             retries -= 1;
-            if (retries == 0) {
+            if retries == 0 {
                 break result;
             }
         }
@@ -155,7 +151,7 @@ impl OCPPDeque {
             action.to_string(),
             serde_json::to_value(&request)?,
         );
-        self.sender
+        let _ = self.sender
             .send(OcppQueuedMessage {
                 uuid: message_id,
                 message: call,
@@ -186,21 +182,20 @@ impl OCPPDeque {
         println!("do_send_request result: {:?}", result);
 
         if let Ok(ocpp_result) = &result {
-            if let mut callback_map = self.callback_map.lock().await {
-                if let Some(callback) = &mut callback_map.get(action) {
-                    println!("there is a callback for action {}", action);
+            let callback_map = self.callback_map.lock().await;
+            if let Some(callback) = &mut callback_map.get(action) {
+                println!("there is a callback for action {}", action);
 
-                    callback
-                        .send((
-                            call,
-                            match ocpp_result {
-                                Ok(value) => Ok(serde_json::to_value(value)?),
-                                Err(e) => Err(e.clone()),
-                            },
-                            None,
-                        ))
-                        .await;
-                }
+                let _ = callback
+                    .send((
+                        call,
+                        match ocpp_result {
+                            Ok(value) => Ok(serde_json::to_value(value)?),
+                            Err(e) => Err(e.clone()),
+                        },
+                        None,
+                    ))
+                    .await;
             }
         }
 

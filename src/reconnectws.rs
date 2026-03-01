@@ -1,10 +1,7 @@
-use futures::{SinkExt, StreamExt};
-use std::backtrace::Backtrace;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use stream_reconnect::{ReconnectStream, UnderlyingStream};
-use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::handshake::client::Response;
 use tokio_tungstenite::tungstenite::http::Request;
@@ -14,6 +11,7 @@ use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateCon
 
 
 pub struct MyWs {
+    #[allow(dead_code)]
     protocol: String,
 }
 

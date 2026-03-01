@@ -1,6 +1,3 @@
-use rust_ocpp::v1_6::messages::change_configuration::{
-    ChangeConfigurationRequest, ChangeConfigurationResponse,
-};
 
 #[derive(Clone)]
 pub struct RFID {
@@ -80,6 +77,8 @@ pub struct EVSE {
 pub struct CPData {
     pub username: Option<String>,
     pub password: Option<String>,
+    pub supported_protocol_versions: Option<String>,
+    pub selected_protocol: Option<String>, // Selected protocol before connection: "ocpp1.6" or "ocpp2.0.1"
     pub serial: String,
     pub model: String,
     pub vendor: String,

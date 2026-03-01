@@ -1,9 +1,8 @@
 use crate::common_client::CommonOcppClientBase;
 use crate::ocpp_1_6::ocpp_1_6_error::OCPP1_6Error;
-use crate::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError, RawOcppCommonResult};
+use crate::raw_ocpp_common_call::{RawOcppCommonError, RawOcppCommonResult};
 use crate::reconnectws::ReconnectWs;
-use futures::stream::SplitSink;
-use futures::{SinkExt, StreamExt, TryStreamExt};
+use futures::SinkExt;
 use rust_ocpp::v1_6::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v1_6::messages::boot_notification::{
     BootNotificationRequest, BootNotificationResponse,
@@ -68,20 +67,9 @@ use rust_ocpp::v1_6::messages::unlock_connector::{
 use rust_ocpp::v1_6::messages::update_firmware::{UpdateFirmwareRequest, UpdateFirmwareResponse};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::Value;
-use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
-use stream_reconnect::ReconnectStream;
-use tokio::net::TcpStream;
-use tokio::sync::broadcast::Sender;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
-use tokio::time::timeout;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use uuid::Uuid;
-use tokio_tungstenite::tungstenite::Utf8Bytes;
 
 /// OCPP 1.6 client
 #[derive(Clone)]
@@ -96,10 +84,19 @@ impl OCPP1_6Client {
         }
     }
 
+    /// Create a new client without a connection (for deferred connection)
+    pub fn new_unconnected() -> Self {
+        Self {
+            base: CommonOcppClientBase::new_unconnected(),
+        }
+    }
+
     /// Disconnect from the server
     pub async fn disconnect(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut lock = self.base.sink.lock().await;
-        lock.close().await?;
+        if let Some(sink) = lock.as_mut() {
+            sink.close().await?;
+        }
         Ok(())
     }
 
@@ -200,7 +197,11 @@ impl OCPP1_6Client {
     pub async fn send_ping(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
             let mut lock = self.base.sink.lock().await;
-            lock.send(Message::Ping(vec![].into())).await?;
+            if let Some(sink) = lock.as_mut() {
+                sink.send(Message::Ping(vec![].into())).await?;
+            } else {
+                return Err("Sink not connected".into());
+            }
         }
 
         let (s, r) = oneshot::channel();
@@ -742,8 +743,10 @@ impl OCPP1_6Client {
         };
 
         let mut lock = self.base.sink.lock().await;
-        if let Err(err) = lock.send(Message::Text(payload.into())).await {
-            println!("Failed to send response: {:?}", err)
+        if let Some(sink) = lock.as_mut() {
+            if let Err(err) = sink.send(Message::Text(payload.into())).await {
+                println!("Failed to send response: {:?}", err)
+            }
         }
     }
 

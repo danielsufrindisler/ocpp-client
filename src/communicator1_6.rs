@@ -1,17 +1,11 @@
-use crate::Client::{OCPP1_6, OCPP2_0_1};
-use crate::{connect, ConnectOptions};
 use rust_ocpp::v1_6::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
-use rust_ocpp::v1_6::messages::boot_notification::{
-    BootNotificationRequest, BootNotificationResponse,
-};
-use rust_ocpp::v1_6::messages::status_notification::{
-    StatusNotificationRequest, StatusNotificationResponse,
-};
+use rust_ocpp::v1_6::messages::boot_notification::BootNotificationRequest;
+
+use rust_ocpp::v1_6::messages::start_transaction::StartTransactionRequest;
 
 use crate::communicator_trait::OCPPCommunicator;
 use crate::cp_data::{
-    AuthorizationType, CPData, ChargeSession, ChargeSessionReference, MessageReference,
-    PlugAndCharge, EV, EVSE, RFID,
+    AuthorizationType, CPData, ChargeSessionReference, MessageReference,
 };
 use crate::ocpp_1_6::OCPP1_6Client;
 use crate::ocpp_deque::OCPPDeque;
@@ -23,6 +17,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
+use chrono;
 
 pub struct OCPPCommunicator1_6 {
     pub client: OCPP1_6Client,
@@ -41,13 +36,13 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             charge_point_serial_number: Some(data.serial.clone()),
             ..Default::default()
         };
-        let message_id = Uuid::new_v4();
+        let _message_id = Uuid::new_v4();
 
         let cp_data_arc = Arc::clone(&self.data);
         let callback = move |call: RawOcppCommonCall,
                              ocpp_result: Result<Value, RawOcppCommonError>,
                              _: Option<MessageReference>,
-                             self_clone: OCPPDeque| {
+                             _self_clone: OCPPDeque| {
             println!("BootNotification callback invoked");
             let cp_data_arc2 = Arc::clone(&cp_data_arc);
             async move {
@@ -108,7 +103,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             let callback = move |call: RawOcppCommonCall,
                                  ocpp_result: Result<Value, RawOcppCommonError>,
                                  reference: Option<MessageReference>,
-                                 self_clone: OCPPDeque| {
+                                 _self_clone: OCPPDeque| {
                 println!("Authorize callback invoked");
                 let cp_data_arc2 = Arc::clone(&cp_data_arc);
                 async move {
@@ -186,5 +181,48 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         Ok(TriggerMessageResponse {
             status: TriggerMessageStatus::Accepted,
         })
+    }
+
+    async fn send_start_transaction(&self, reference: ChargeSessionReference) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let data = self.data.lock().await;
+        let evse = &data.evses[reference.evse_index];
+        let charge_session = &evse.charge_sessions[reference.charge_session_index];
+
+       
+        let id_tag;
+
+        if let AuthorizationType::RFID(rfid) = &charge_session.authorization {
+            println!("Using RFID {} for StartTransaction", rfid.id_tag);
+            id_tag = rfid.id_tag.clone();
+        } else if let AuthorizationType::Remote(rfid) = &charge_session.authorization {
+            println!("Using RFID {} for StartTransaction", rfid.id_tag);
+            id_tag = rfid.id_tag.clone();
+
+        } else {
+            return Err("StartTransaction requires RFID authorization".into());
+        }
+
+
+        let start_transaction_request = StartTransactionRequest {
+            connector_id: evse.connector_ids[0], // Assuming first connector
+            id_tag,
+            meter_start: 0, // Placeholder, should be actual meter value
+            timestamp: chrono::Utc::now(),
+            reservation_id: None,
+            ..Default::default()
+        };
+
+        let response = self
+            .ocpp_deque
+            .do_send_request_queued(start_transaction_request, "StartTransaction", Some(MessageReference::ChargeSession(reference)))
+            .await;
+
+        if let Ok(_) = response {
+            println!("StartTransaction is scheduled");
+        } else {
+            println!("StartTransaction failed to schedule");
+        }
+
+        Ok(())
     }
 }
