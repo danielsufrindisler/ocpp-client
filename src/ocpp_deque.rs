@@ -2,18 +2,16 @@ use crate::common_client::CommonOcppClientBase;
 use crate::cp_data::MessageReference;
 use crate::raw_ocpp_common_call::RawOcppCommonCall;
 use crate::raw_ocpp_common_call::RawOcppCommonError;
+use log::{debug, error, info, log_enabled, trace, Level};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
-use tokio::sync::{
-    mpsc,
-    mpsc::Sender,
-    Mutex,
-};
+use tokio::sync::{mpsc, mpsc::Sender, Mutex};
 use uuid::Uuid;
+
 pub struct OcppQueuedMessage {
     uuid: Uuid,
     message: RawOcppCommonCall,
@@ -54,7 +52,7 @@ impl OCPPDeque {
                 let result = obj2
                     .send_with_retry(call.uuid, call.message.clone(), call.reference)
                     .await;
-                println!("spawned do_send_request result: {:?}", result);
+                debug!("spawned do_send_request result: {:?}", result);
             }
         });
         obj
@@ -76,7 +74,7 @@ impl OCPPDeque {
             if let Ok(ref ocpp_result) = result {
                 let callback_map = self.callback_map.lock().await;
                 if let Some(callback) = &mut callback_map.get(&call.2) {
-                    println!("there is a callback for action {}", call.2);
+                    trace!("there is a callback for action {}", call.2);
 
                     let _ = callback
                         .send((
@@ -89,7 +87,7 @@ impl OCPPDeque {
                         ))
                         .await;
                 } else {
-                    println!("there no callback for action{}", call.2);
+                    trace!("there no callback for action{}", call.2);
                 }
                 break result;
             }
@@ -126,12 +124,11 @@ impl OCPPDeque {
         }
 
         let s = self.clone();
-        println!("registered callback for action {}", action);
+        debug!("registered callback for action {}", action);
 
         tokio::spawn(async move {
             while let Some((call, result, reference)) = recv.recv().await {
-                println!("calling callback");
-
+                trace!("calling callback");
                 callback(call, result, reference, s.clone()).await;
             }
         });
@@ -151,7 +148,8 @@ impl OCPPDeque {
             action.to_string(),
             serde_json::to_value(&request)?,
         );
-        let _ = self.sender
+        let _ = self
+            .sender
             .send(OcppQueuedMessage {
                 uuid: message_id,
                 message: call,
@@ -179,12 +177,12 @@ impl OCPPDeque {
             .client
             .do_send_request_raw(message_id, call.clone())
             .await;
-        println!("do_send_request result: {:?}", result);
+        trace!("do_send_request result: {:?}", result);
 
         if let Ok(ocpp_result) = &result {
             let callback_map = self.callback_map.lock().await;
             if let Some(callback) = &mut callback_map.get(action) {
-                println!("there is a callback for action {}", action);
+                trace!("there is a callback for action {}", action);
 
                 let _ = callback
                     .send((

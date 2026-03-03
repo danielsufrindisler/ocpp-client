@@ -1,6 +1,5 @@
-use crate::cp_data::{
-    AuthorizationType, ChargeSessionReference, MessageReference,
-};
+use crate::common_client::CommonOcppClientBase;
+use crate::cp_data::{AuthorizationType, ChargeSessionReference, MessageReference};
 use async_trait::async_trait;
 use rust_ocpp::v1_6::messages::trigger_message::TriggerMessageResponse;
 
@@ -16,5 +15,9 @@ pub trait OCPPCommunicator: Send + Sync {
         &self,
     ) -> Result<TriggerMessageResponse, Box<dyn std::error::Error + Send + Sync>>;
     async fn register_messages(&self) -> ();
-    async fn send_start_transaction(&self, reference: ChargeSessionReference) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn send_start_transaction(
+        &self,
+        reference: ChargeSessionReference,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    fn get_base(&mut self) -> &mut CommonOcppClientBase;
 }

@@ -28,6 +28,7 @@ base64 = "0.22"
 stream-reconnect = { git = "https://github.com/danielsufrindisler/stream-reconnect.git" }
 # stream-reconnect = { path = "../stream-reconnect" }
 async-trait = "0.1.89"
+log = "0.4"
 env_logger = "0.11"
 chrono = "0.4.23"
 
