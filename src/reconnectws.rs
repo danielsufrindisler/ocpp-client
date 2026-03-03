@@ -1,14 +1,17 @@
+use log::{debug, error, info, log_enabled, trace, Level};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use stream_reconnect::{ReconnectStream, UnderlyingStream};
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig;
 use tokio_tungstenite::tungstenite::handshake::client::Response;
 use tokio_tungstenite::tungstenite::http::Request;
 use tokio_tungstenite::tungstenite::{error::Error as WsError, Message};
-use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream, tungstenite::protocol::WebSocketConfig};
-use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig;
-
+use tokio_tungstenite::{
+    connect_async_with_config, tungstenite::protocol::WebSocketConfig, MaybeTlsStream,
+    WebSocketStream,
+};
 
 pub struct MyWs {
     #[allow(dead_code)]
@@ -25,11 +28,11 @@ impl UnderlyingStream<Request<()>, Result<Message, WsError>, WsError> for MyWs {
     ) -> Pin<Box<dyn Future<Output = Result<(Self::Stream, Response), WsError>> + Send>> {
         Box::pin(async move {
             // In this case, we are trying to connect to the WebSocket endpoint
-            println!("Connecting to {}", addr.uri());
-            //    println!("Custom backtrace: {}", Backtrace::force_capture());
+            info!("Connecting to {}", addr.uri());
             let mut config = WebSocketConfig::default();
             config.extensions.permessage_deflate = Some(DeflateConfig::default());
-            let (ws_connection, response) = connect_async_with_config(addr, Some(config), false).await?;
+            let (ws_connection, response) =
+                connect_async_with_config(addr, Some(config), false).await?;
             Ok((ws_connection, response))
         })
     }

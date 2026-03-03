@@ -3,6 +3,7 @@ use crate::ocpp_1_6::ocpp_1_6_error::OCPP1_6Error;
 use crate::raw_ocpp_common_call::{RawOcppCommonError, RawOcppCommonResult};
 use crate::reconnectws::ReconnectWs;
 use futures::SinkExt;
+use log::{debug, error, info, log_enabled, trace, warn, Level};
 use rust_ocpp::v1_6::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v1_6::messages::boot_notification::{
     BootNotificationRequest, BootNotificationResponse,
@@ -78,16 +79,15 @@ pub struct OCPP1_6Client {
 }
 
 impl OCPP1_6Client {
-    pub(crate) fn new(stream: ReconnectWs) -> Self {
-        Self {
-            base: CommonOcppClientBase::new(stream),
-        }
-    }
-
     /// Create a new client without a connection (for deferred connection)
-    pub fn new_unconnected() -> Self {
+    pub fn new_unconnected(
+        username: Option<String>,
+        password: Option<String>,
+        address_str: String,
+        proto_str: String,
+    ) -> Self {
         Self {
-            base: CommonOcppClientBase::new_unconnected(),
+            base: CommonOcppClientBase::new_unconnected(username, password, address_str, proto_str),
         }
     }
 
@@ -676,7 +676,7 @@ impl OCPP1_6Client {
                         s.do_send_response(response, &call.1).await
                     }
                     Err(err) => {
-                        println!("Failed to parse payload: {:?}", err)
+                        warn!("Failed to parse payload: {:?}", err)
                     }
                 }
             }
@@ -711,7 +711,7 @@ impl OCPP1_6Client {
                         Ok(serde_json::from_value(call.3).unwrap())
                     }
                     Err(err) => {
-                        println!("Failed to parse payload: {:?}", err);
+                        warn!("Failed to parse payload: {:?}", err);
                         Err("Failed to parse payload".into())
                     }
                 },
@@ -745,7 +745,7 @@ impl OCPP1_6Client {
         let mut lock = self.base.sink.lock().await;
         if let Some(sink) = lock.as_mut() {
             if let Err(err) = sink.send(Message::Text(payload.into())).await {
-                println!("Failed to send response: {:?}", err)
+                warn!("Failed to send response: {:?}", err)
             }
         }
     }
