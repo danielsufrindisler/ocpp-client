@@ -2,6 +2,7 @@ use rust_ocpp::v1_6::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v1_6::messages::boot_notification::BootNotificationRequest;
 
 use rust_ocpp::v1_6::messages::start_transaction::StartTransactionRequest;
+use tokio_tungstenite::tungstenite::http::request;
 
 use crate::common_client::CommonOcppClientBase;
 use crate::communicator_trait::OCPPCommunicator;
@@ -15,6 +16,8 @@ use async_trait::async_trait;
 use chrono;
 use log::{debug, error, info, log_enabled, trace, warn, Level};
 use rust_ocpp::v1_6::messages::trigger_message::{TriggerMessageRequest, TriggerMessageResponse};
+use rust_ocpp::v1_6::messages::get_configuration::{GetConfigurationRequest, GetConfigurationResponse};
+
 use rust_ocpp::v1_6::types::TriggerMessageStatus;
 use serde_json::Value;
 use std::sync::Arc;
@@ -164,6 +167,33 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
 
     async fn register_messages(&self) -> () {
         let _ = self.register_trigger_message().await;
+
+        let data = self.data.clone();
+        let callback = move | request: GetConfigurationRequest, _client: OCPP1_6Client| {
+            let _data = data.clone();
+            async move {
+                debug!("Received GetConfiguration from server");
+                
+                if request.key.is_none() {
+                    debug!("GetConfiguration request with empty keys, returning all configuration");
+                         Ok(GetConfigurationResponse {
+                    configuration_key: None,
+                    unknown_key: None,
+                })
+            }
+                 else {
+                    debug!("GetConfiguration request for keys: {:?}", request.key);
+                     Ok(GetConfigurationResponse {
+                    configuration_key: None,
+                    unknown_key: Some(request.key.unwrap()),
+                })
+                }
+            }
+           
+        };
+        info!("Registering GetConfiguration callback");
+        self.client.on_get_configuration(callback).await;
+
     }
 
     async fn register_trigger_message(

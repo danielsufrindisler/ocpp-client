@@ -94,7 +94,12 @@ impl CP {
             }
         }
 
+
+
         let comm_mpsc = self.communicator.clone();
+
+        comm_mpsc.lock().await.as_ref().unwrap().register_messages().await;
+
         tokio::spawn(async move {
             let mut rx = rx;
             while let Some(msg) = rx.recv().await {
