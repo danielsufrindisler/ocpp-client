@@ -744,6 +744,7 @@ impl OCPP1_6Client {
 
         let mut lock = self.base.sink.lock().await;
         if let Some(sink) = lock.as_mut() {
+            info!("Sending response: {}", payload);
             if let Err(err) = sink.send(Message::Text(payload.into())).await {
                 warn!("Failed to send response: {:?}", err)
             }
