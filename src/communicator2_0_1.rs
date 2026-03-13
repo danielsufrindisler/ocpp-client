@@ -18,8 +18,9 @@ use crate::ocpp_deque::OCPPDeque;
 use crate::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError};
 use async_trait::async_trait;
 use log::{debug, error, info, log_enabled, trace, warn, Level};
-use rust_ocpp::v1_6::messages::trigger_message::TriggerMessageResponse;
+use rust_ocpp::v1_6::messages::trigger_message::TriggerMessageResponse; //todo
 use rust_ocpp::v1_6::types::TriggerMessageStatus;
+use rust_ocpp::v2_0_1::messages::get_variables::{GetVariablesRequest, GetVariablesResponse};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -146,8 +147,8 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
                 } else {
                     if let Some(MessageReference::ChargeSession(cs_ref)) = reference {
                         info!(
-                            "Authorization rejected for ID tag for evse {}, session {}",
-                            cs_ref.evse_index, cs_ref.charge_session_index
+                            "Authorization rejected for ID tag for evse {}",
+                            cs_ref.evse_index
                         );
                         //TODO, above not needed
                     } else {
@@ -166,6 +167,36 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
 
     async fn register_messages(&self) -> () {
         let _ = self.register_trigger_message().await;
+        /*
+
+                let data = self.data.clone();
+                let callback = move | request: GetVariablesRequest, _client: OCPP2_0_1Client| {
+                    let _data = data.clone();
+                    async move {
+                        debug!("Received GetVariables from server");
+
+                        if request.get_variable_data
+                        if request.key.is_none() {
+                            debug!("GetVariables request with empty keys, returning all variables");
+                                 Ok(GetVariablesResponse {
+                            configuration_key: None,
+                            unknown_key: None,
+                        })
+                    }
+                         else {
+                            debug!("GetVariables request for keys: {:?}", request.key);
+                             Ok(GetVariablesResponse {
+                            configuration_key: None,
+                            unknown_key: Some(request.key.unwrap()),
+                        })
+                        }
+                    }
+
+                };
+                info!("Registering GetConfiguration callback");
+                self.client.on_get_configuration(callback).await;
+
+        */
     }
 
     async fn register_trigger_message(
@@ -181,8 +212,7 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
         reference: ChargeSessionReference,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let data = self.data.lock().await;
-        let evse = &data.evses[reference.evse_index];
-        let charge_session = &evse.charge_sessions[reference.charge_session_index];
+        let evse = &data.evses[&reference.evse_index];
 
         let id_tag;
 

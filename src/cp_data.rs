@@ -1,3 +1,6 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
 #[derive(Clone, Debug)]
 pub struct RFID {
     pub id_tag: String,
@@ -51,9 +54,8 @@ pub struct ChargeSession {
 
 #[derive(Clone, Debug)]
 pub struct ChargeSessionReference {
-    pub evse_index: usize,
+    pub evse_index: u32,
     pub connector_id: u32,
-    pub charge_session_index: usize,
 }
 
 #[derive(Clone)]
@@ -68,9 +70,81 @@ pub enum MessageReference {
 pub struct EVSE {
     pub is_ac: bool,
     pub connector_ids: Vec<u32>,
-    pub charge_sessions: Vec<ChargeSession>,
+    pub plugged_in: Option<u32>,
+    pub started: bool,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+
+pub struct GetVariableData {
+    pub components: Vec<Components>,
+}
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+
+pub struct Components {
+    pub instance: Option<String>,
+    pub name: String,
+    pub evse: Option<u32>,
+    pub connector: Option<u32>,
+    pub variables: Vec<Variable>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(untagged)]
+
+pub enum ValueType {
+    String(String),
+    Integer(i32),
+    Boolean(bool),
+    // Add more types as needed
+}
+
+impl fmt::Display for ValueType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ValueType::String(s) => write!(f, "{}", s),
+            ValueType::Integer(i) => write!(f, "{}", i),
+            ValueType::Boolean(b) => write!(f, "{}", b),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+
+pub struct Variable {
+    pub instance: Option<String>,
+    pub name: String,
+    pub ocpp16_key: Option<String>,
+    pub value: Option<String>,
+    pub required: bool,
+    pub attributes: Attributes,
+    pub characteristics: Characteristics,
+    pub used: Option<bool>,
+    pub default_value: Option<ValueType>,
+}
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+
+pub struct Attributes {
+    pub mutability: String,
+    #[serde(rename = "type")]
+    type_string: Option<String>,
+}
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Characteristics {
+    data_type: String,
+    unit: Option<String>,
+    values_list: Option<String>,
+    max_limit: Option<u32>,
+    min_limit: Option<u32>,
+}
+
+#[derive(Clone)]
 pub struct CPData {
     pub username: Option<String>,
     pub password: Option<String>,
@@ -80,7 +154,9 @@ pub struct CPData {
     pub model: String,
     pub vendor: String,
     pub booted: bool,
-    pub evses: Vec<EVSE>,
+    pub evses: HashMap<u32, EVSE>,
     pub events: Vec<ScheduledEvents>,
     pub authorization: Option<AuthorizationType>, // a pending authorization that is not tied to a specific connector
+    pub variables: GetVariableData,
+    pub base_url: String,
 }
