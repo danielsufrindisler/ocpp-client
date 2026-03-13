@@ -1,5 +1,6 @@
 use rust_ocpp::v1_6::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v1_6::messages::boot_notification::BootNotificationRequest;
+use rust_ocpp::v1_6::types::KeyValue;
 
 use rust_ocpp::v1_6::messages::start_transaction::StartTransactionRequest;
 use tokio_tungstenite::tungstenite::http::request;
@@ -15,8 +16,10 @@ use crate::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError};
 use async_trait::async_trait;
 use chrono;
 use log::{debug, error, info, log_enabled, trace, warn, Level};
+use rust_ocpp::v1_6::messages::get_configuration::{
+    GetConfigurationRequest, GetConfigurationResponse,
+};
 use rust_ocpp::v1_6::messages::trigger_message::{TriggerMessageRequest, TriggerMessageResponse};
-use rust_ocpp::v1_6::messages::get_configuration::{GetConfigurationRequest, GetConfigurationResponse};
 
 use rust_ocpp::v1_6::types::TriggerMessageStatus;
 use serde_json::Value;
@@ -143,10 +146,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                         }
                     } else {
                         if let Some(MessageReference::ChargeSession(cs_ref)) = reference {
-                            info!(
-                                "Authorization re for ID tag for evse {}, session {}",
-                                cs_ref.evse_index, cs_ref.charge_session_index
-                            );
+                            info!("Authorization re for ID tag for evse {}", cs_ref.evse_index);
                             //TODO, above not needed
                         } else {
                             warn!("Unexpected bahaviour, authorization failed but no charge session reference provided");
@@ -169,31 +169,61 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         let _ = self.register_trigger_message().await;
 
         let data = self.data.clone();
-        let callback = move | request: GetConfigurationRequest, _client: OCPP1_6Client| {
+        let callback = move |request: GetConfigurationRequest, _client: OCPP1_6Client| {
             let _data = data.clone();
             async move {
                 debug!("Received GetConfiguration from server");
-                
+
                 if request.key.is_none() {
                     debug!("GetConfiguration request with empty keys, returning all configuration");
-                         Ok(GetConfigurationResponse {
-                    configuration_key: None,
-                    unknown_key: None,
-                })
-            }
-                 else {
+                    Ok(GetConfigurationResponse {
+                        configuration_key: None,
+                        unknown_key: None,
+                    })
+                } else {
                     debug!("GetConfiguration request for keys: {:?}", request.key);
-                     Ok(GetConfigurationResponse {
-                    configuration_key: None,
-                    unknown_key: Some(request.key.unwrap()),
-                })
+                    let mut unknown_keys = vec![];
+                    let mut configuration_keys: Vec<KeyValue> = vec![];
+                    for key in request.key.clone().unwrap() {
+                        let mut found = false;
+                        for component in &_data.lock().await.variables.components {
+                            for variable in &component.variables {
+                                if variable.ocpp16_key.clone().unwrap_or("".to_string()) == key {
+                                    configuration_keys.push(KeyValue {
+                                        key: key.clone(),
+                                        value: Some(
+                                            variable.default_value.as_ref().unwrap().to_string(),
+                                        ),
+                                        readonly: variable.attributes.mutability == "ReadOnly",
+                                    });
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if !found {
+                            unknown_keys.push(key.clone());
+                        }
+                    }
+                    let unkown_keys = if unknown_keys.is_empty() {
+                        None
+                    } else {
+                        Some(unknown_keys)
+                    };
+                    let configuration_keys = if configuration_keys.is_empty() {
+                        None
+                    } else {
+                        Some(configuration_keys)
+                    };
+                    Ok(GetConfigurationResponse {
+                        configuration_key: configuration_keys,
+                        unknown_key: unkown_keys,
+                    })
                 }
             }
-           
         };
         info!("Registering GetConfiguration callback");
         self.client.on_get_configuration(callback).await;
-
     }
 
     async fn register_trigger_message(
@@ -226,17 +256,16 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         reference: ChargeSessionReference,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         debug!(
-            "Preparing to send StartTransaction for evse {}, session {}",
-            reference.evse_index, reference.charge_session_index
+            "Preparing to send StartTransaction for evse {}",
+            reference.evse_index
         );
         let data = self.data.lock().await;
         debug!(
-            "Preparing to send StartTransaction for evse {}, session {}",
-            reference.evse_index, reference.charge_session_index
+            "Preparing to send StartTransaction for evse {}",
+            reference.evse_index,
         );
 
-        let evse = &data.evses[reference.evse_index];
-        let charge_session = &evse.charge_sessions[reference.charge_session_index];
+        let evse = &data.evses[&reference.evse_index];
 
         let id_tag;
 
