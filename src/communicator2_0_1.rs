@@ -7,6 +7,9 @@ use rust_ocpp::v2_0_1::enumerations::trigger_reason_enum_type::TriggerReasonEnum
 use rust_ocpp::v2_0_1::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v2_0_1::messages::boot_notification::BootNotificationRequest as BootNotificationRequest2_0_1;
 use rust_ocpp::v2_0_1::messages::transaction_event::TransactionEventRequest;
+use rust_ocpp::v2_0_1::messages::meter_values::{MeterValuesRequest, MeterValuesResponse};
+use rust_ocpp::v2_0_1::datatypes::meter_value_type::MeterValueType;
+use rust_ocpp::v2_0_1::datatypes::sampled_value_type::SampledValueType;
 
 use crate::common_client::CommonOcppClientBase;
 use crate::communicator_trait::OCPPCommunicator;
@@ -258,6 +261,91 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
             trace!("StartTransaction is scheduled");
         } else {
             error!("StartTransaction failed to schedule");
+        }
+
+        Ok(())
+    }
+
+    async fn send_meter_values(
+        &self,
+        reference: ChargeSessionReference,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        debug!(
+            "Preparing to send MeterValues for evse {}",
+            reference.evse_index
+        );
+        let data = self.data.lock().await;
+
+        let evse = &data.evses[&reference.evse_index];
+
+        // Get Measurands from device model
+        let mut measurands_str = String::new();
+        
+        for component in &data.variables.components {
+            if component.name == "AlignedDataCtrlr" && component.evse.is_none() {
+                for var in &component.variables {
+                    if var.name == "Measurands" {
+                        if let Some(ref default_val) = var.default_value {
+                            measurands_str = default_val.to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse measurands from comma-separated list
+        let measurands: Vec<&str> = measurands_str.split(',').map(|s| s.trim()).collect();
+
+        // Create sampled values
+        let _sampled_values: Vec<SampledValueType> = Vec::new();
+        
+        for measurand in measurands {
+            let _value = match measurand {
+                "Energy.Active.Import.Register" => evse.meter_energy,
+                "Power.Active.Import" => {
+                    if let Some(ev) = &evse.ev {
+                        ev.power * 1000.0 // Convert kW to W
+                    } else {
+                        0.0
+                    }
+                },
+                "Current.Import" => {
+                    // Calculate approximate current assuming 230V per phase
+                    if let Some(ev) = &evse.ev {
+                        ev.power * 1000.0 / 230.0 // Current in A
+                    } else {
+                        0.0
+                    }
+                },
+                _ => 0.0,
+            };
+
+            info!("Meter value for {}: {}", measurand, _value);
+        }
+
+        // For now, send empty meter values as placeholder
+        // TODO: Properly construct sampled_values with correct SampledValueType
+        let meter_values_request = MeterValuesRequest {
+            evse_id: reference.evse_index as i32,
+            meter_value: vec![MeterValueType {
+                timestamp: chrono::Utc::now(),
+                sampled_value: vec![],
+            }],
+        };
+
+        let response = self
+            .ocpp_deque
+            .do_send_request_queued(
+                meter_values_request,
+                "MeterValues",
+                Some(MessageReference::ChargeSession(reference)),
+            )
+            .await;
+
+        if let Ok(_) = response {
+            trace!("MeterValues is scheduled");
+        } else {
+            trace!("MeterValues failed to schedule");
         }
 
         Ok(())

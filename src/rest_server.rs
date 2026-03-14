@@ -1,3 +1,8 @@
+use crate::cp::CP;
+use crate::cp_data::{
+    AuthorizationType, CPData, ChargeSessionReference, EventTypes, GetVariableData,
+    ScheduledEvents, EV, RFID,
+};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -10,8 +15,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use crate::cp::{CP};
-use crate::cp_data::{AuthorizationType, CPData, ChargeSessionReference, EventTypes, GetVariableData, RFID, ScheduledEvents};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +38,14 @@ pub struct AddEventRequest {
     pub evse_index: Option<u32>,
     #[serde(default)]
     pub connector_id: Option<u32>,
+    #[serde(default)]
+    pub power_vs_soc: Option<Vec<(f32, f32)>>,
+    #[serde(default)]
+    pub soc: Option<f32>,
+    #[serde(default)]
+    pub final_soc: Option<f32>,
+    #[serde(default)]
+    pub capacity: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,7 +69,12 @@ pub struct ErrorResponse {
 pub struct CPStore {
     pub cps: tokio::sync::RwLock<HashMap<usize, Arc<tokio::sync::Mutex<CPData>>>>,
     pub cp_instances: tokio::sync::RwLock<HashMap<usize, Arc<tokio::sync::Mutex<CP>>>>,
-    pub cp_tasks: tokio::sync::RwLock<HashMap<usize, tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>>>,
+    pub cp_tasks: tokio::sync::RwLock<
+        HashMap<
+            usize,
+            tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+        >,
+    >,
     pub next_id: AtomicUsize,
 }
 
@@ -74,8 +90,9 @@ impl CPStore {
 
     pub async fn create_cp(&self, request: CreateCPRequest) -> usize {
         let cp_id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        
+
         let variables = CP::read_variables_from_file();
+
         CP::list_components(variables.clone());
 
         let cp_data = CPData {
@@ -107,12 +124,19 @@ impl CPStore {
         };
 
         let task = tokio::spawn(async move {
-            info!("Starting CP {} with serial {} now", cp_id, cp.data.lock().await.serial);
+            info!(
+                "Starting CP {} with serial {} now",
+                cp_id,
+                cp.data.lock().await.serial
+            );
             cp.run().await;
-            info!("Starting CP {} with serial {} now", cp_id, cp.data.lock().await.serial);
-
+            info!(
+                "Starting CP {} with serial {} now",
+                cp_id,
+                cp.data.lock().await.serial
+            );
         });
-            info!("here");
+        info!("here");
 
         let mut cp_tasks = self.cp_tasks.write().await;
         //cp_tasks.insert(cp_id, task);
@@ -140,13 +164,23 @@ impl CPStore {
         result
     }
 
-    pub async fn add_event(&self, cp_id: usize, duration: u32, event_type: &str, 
-                          id_tag: Option<String>, evse_index: Option<u32>, 
-                          connector_id: Option<u32>) -> Result<(), String> {
+    pub async fn add_event(
+        &self,
+        cp_id: usize,
+        duration: u32,
+        event_type: &str,
+        id_tag: Option<String>,
+        evse_index: Option<u32>,
+        connector_id: Option<u32>,
+        power_vs_soc: Option<Vec<(f32, f32)>>,
+        soc: Option<f32>,
+        final_soc: Option<f32>,
+        capacity: Option<f32>,
+    ) -> Result<(), String> {
         let cps = self.cps.read().await;
         if let Some(cp_arc) = cps.get(&cp_id) {
             let mut cp = cp_arc.lock().await;
-            
+
             let event = match event_type {
                 "authorize" => {
                     if let Some(tag) = id_tag {
@@ -160,10 +194,20 @@ impl CPStore {
                 "local_stop" => EventTypes::LocalStop,
                 "plug" => {
                     if let (Some(evse_idx), Some(conn_id)) = (evse_index, connector_id) {
-                        EventTypes::Plug(ChargeSessionReference {
-                            evse_index: evse_idx,
-                            connector_id: conn_id,
-                        })
+                        let ev = EV {
+                            power_vs_soc: power_vs_soc.unwrap_or_default(),
+                            soc: soc.unwrap_or(0.0),
+                            final_soc: final_soc.unwrap_or(100.0),
+                            capacity: capacity.unwrap_or(50.0),
+                            power: 0.0,
+                        };
+                        EventTypes::Plug(
+                            ChargeSessionReference {
+                                evse_index: evse_idx,
+                                connector_id: conn_id,
+                            },
+                            ev,
+                        )
                     } else {
                         return Err("plug event requires evse_index and connector_id".to_string());
                     }
@@ -181,10 +225,7 @@ impl CPStore {
                 _ => return Err(format!("unknown event type: {}", event_type)),
             };
 
-            cp.events.push(ScheduledEvents {
-                duration,
-                event,
-            });
+            cp.events.push(ScheduledEvents { duration, event });
             Ok(())
         } else {
             Err(format!("CP with ID {} not found", cp_id))
@@ -221,7 +262,8 @@ async fn get_cp_data_handler(
             "protocol": cp.selected_protocol,
             "booted": cp.booted,
             "events_count": cp.events.len(),
-        })).into_response(),
+        }))
+        .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -235,16 +277,21 @@ async fn get_cp_data_handler(
 
 async fn list_cps_handler(State(store): State<Arc<CPStore>>) -> impl IntoResponse {
     let cps = store.list_cps().await;
-    let cp_list: Vec<_> = cps.iter().map(|cp| serde_json::json!({
-        "username": &cp.username,
-        "password": &cp.password,
-        "vendor": &cp.vendor,
-        "model": &cp.model,
-        "serial": &cp.serial,
-        "protocol": &cp.selected_protocol,
-        "booted": cp.booted,
-        "events_count": cp.events.len(),
-    })).collect();
+    let cp_list: Vec<_> = cps
+        .iter()
+        .map(|cp| {
+            serde_json::json!({
+                "username": &cp.username,
+                "password": &cp.password,
+                "vendor": &cp.vendor,
+                "model": &cp.model,
+                "serial": &cp.serial,
+                "protocol": &cp.selected_protocol,
+                "booted": cp.booted,
+                "events_count": cp.events.len(),
+            })
+        })
+        .collect();
     Json(cp_list).into_response()
 }
 
@@ -253,15 +300,20 @@ async fn add_event_handler(
     Path(cp_id): Path<usize>,
     Json(payload): Json<AddEventRequest>,
 ) -> impl IntoResponse {
-    match store.add_event(
-        cp_id,
-        payload.duration,
-        &payload.event_type,
-        payload.id_tag,
-        payload.evse_index,
-        payload.connector_id,
-    )
-    .await
+    match store
+        .add_event(
+            cp_id,
+            payload.duration,
+            &payload.event_type,
+            payload.id_tag,
+            payload.evse_index,
+            payload.connector_id,
+            payload.power_vs_soc,
+            payload.soc,
+            payload.final_soc,
+            payload.capacity,
+        )
+        .await
     {
         Ok(_) => (
             StatusCode::CREATED,
@@ -289,23 +341,28 @@ async fn add_multiple_events_handler(
 ) -> impl IntoResponse {
     let mut errors = Vec::new();
     let mut count = 0;
-    
+
     for event in payload.events {
-        match store.add_event(
-            cp_id,
-            event.duration,
-            &event.event_type,
-            event.id_tag,
-            event.evse_index,
-            event.connector_id,
-        )
-        .await
+        match store
+            .add_event(
+                cp_id,
+                event.duration,
+                &event.event_type,
+                event.id_tag,
+                event.evse_index,
+                event.connector_id,
+                event.power_vs_soc,
+                event.soc,
+                event.final_soc,
+                event.capacity,
+            )
+            .await
         {
             Ok(_) => count += 1,
             Err(e) => errors.push(e),
         }
     }
-    
+
     if errors.is_empty() {
         (
             StatusCode::CREATED,
