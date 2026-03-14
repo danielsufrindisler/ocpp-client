@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct RFID {
     pub id_tag: String,
@@ -16,19 +17,24 @@ pub enum AuthorizationType {
     Remote(RFID),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 
 pub struct EV {
-    pub power_vs_soc: Vec<(f32, f32)>,
-    //todo thermal stuff
-    //todo efficiency
+    pub power_vs_soc: Vec<(f32, f32)>, //kW vs SOC
+    pub soc: f32,
+    pub final_soc: f32,
+    pub capacity: f32, //kWh
+    pub power: f32,    //kW
+
+                       //todo thermal stuff
+                       //todo efficiency
 }
 
 #[derive(Clone, Debug)]
 pub enum EventTypes {
     Authorize(AuthorizationType),
     LocalStop,
-    Plug(ChargeSessionReference),
+    Plug(ChargeSessionReference, EV),
     Unplug(ChargeSessionReference),
     RemoteStart(ChargeSessionReference),
     RemoteStop(ChargeSessionReference),
@@ -72,6 +78,9 @@ pub struct EVSE {
     pub connector_ids: Vec<u32>,
     pub plugged_in: Option<u32>,
     pub started: bool,
+    pub ev: Option<EV>,
+    pub charging_task: Option<tokio::task::AbortHandle>,
+    pub meter_energy: f32, // Energy in Wh
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]

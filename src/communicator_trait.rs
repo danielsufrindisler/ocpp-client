@@ -19,6 +19,10 @@ pub trait OCPPCommunicator: Send + Sync {
         &self,
         reference: ChargeSessionReference,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn send_meter_values(
+        &self,
+        reference: ChargeSessionReference,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     fn get_base(&mut self) -> &mut CommonOcppClientBase;
 }
