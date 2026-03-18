@@ -3,7 +3,9 @@ use rust_ocpp::v1_6::messages::boot_notification::BootNotificationRequest;
 use rust_ocpp::v1_6::types::KeyValue;
 use rust_ocpp::v1_6::types::{SampledValue, Measurand };
 use rust_ocpp::v1_6::messages::start_transaction::StartTransactionRequest;
-use rust_ocpp::v1_6::messages::meter_values::{MeterValuesRequest, MeterValuesResponse};
+use rust_ocpp::v1_6::messages::stop_transaction::StopTransactionRequest;
+use rust_ocpp::v1_6::types::Reason;
+use rust_ocpp::v1_6::messages::meter_values::MeterValuesRequest;
 use tokio_tungstenite::tungstenite::http::request;
 
 use crate::common_client::CommonOcppClientBase;
@@ -302,6 +304,45 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             trace!("StartTransaction is scheduled");
         } else {
             trace!("StartTransaction failed to schedule");
+        }
+
+        Ok(())
+    }
+
+    async fn send_stop_transaction(
+        &self,
+        reference: ChargeSessionReference,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        debug!(
+            "Preparing to send StopTransaction for evse {}",
+            reference.evse_index
+        );
+        let data = self.data.lock().await;
+
+        let evse = &data.evses[&reference.evse_index];
+
+        let stop_transaction_request = StopTransactionRequest {
+            meter_stop: (evse.meter_energy * 1000.0) as i32, // Convert Wh to Wh
+            timestamp: chrono::Utc::now(),
+            transaction_id: 123, // TODO: Store actual transaction ID
+            reason: Some(Reason::Local),
+            id_tag: None,
+            ..Default::default()
+        };
+
+        let response = self
+            .ocpp_deque
+            .do_send_request_queued(
+                stop_transaction_request,
+                "StopTransaction",
+                Some(MessageReference::ChargeSession(reference)),
+            )
+            .await;
+
+        if let Ok(_) = response {
+            trace!("StopTransaction is scheduled");
+        } else {
+            error!("StopTransaction failed to schedule");
         }
 
         Ok(())

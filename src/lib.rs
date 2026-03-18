@@ -6,6 +6,7 @@ pub mod communicator_trait;
 mod connect;
 pub mod cp;
 pub mod cp_data;
+pub mod cli;
 pub mod ocpp_deque;
 pub mod raw_ocpp_common_call;
 mod reconnectws;
