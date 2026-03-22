@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
+use serde;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+
 #[derive(Clone, Debug)]
 pub struct RFID {
     pub id_tag: String,
@@ -81,6 +81,7 @@ pub struct EVSE {
     pub ev: Option<EV>,
     pub charging_task: Option<tokio::task::AbortHandle>,
     pub meter_energy: f32, // Energy in Wh
+    pub status: String, // OCPP status: Available, Preparing, Charging, etc.
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -141,10 +142,12 @@ pub struct Variable {
 pub struct Attributes {
     pub mutability: String,
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     type_string: Option<String>,
 }
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 pub struct Characteristics {
     data_type: String,
     unit: Option<String>,

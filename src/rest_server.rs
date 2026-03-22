@@ -1,6 +1,6 @@
 use crate::cp::CP;
 use crate::cp_data::{
-    AuthorizationType, CPData, ChargeSessionReference, EventTypes, GetVariableData,
+    AuthorizationType, CPData, ChargeSessionReference, EventTypes,
     ScheduledEvents, EV, RFID,
 };
 use axum::{
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+
 
 #[derive(Debug, Deserialize)]
 pub struct CreateCPRequest {
@@ -123,13 +123,13 @@ impl CPStore {
             data: cp_data_arc,
         };
 
-        let task = tokio::spawn(async move {
+        let _task = tokio::spawn(async move {
             info!(
                 "Starting CP {} with serial {} now",
                 cp_id,
                 cp.data.lock().await.serial
             );
-            cp.run().await;
+            let _ = cp.run().await;
             info!(
                 "Starting CP {} with serial {} now",
                 cp_id,
@@ -138,7 +138,7 @@ impl CPStore {
         });
         info!("here");
 
-        let mut cp_tasks = self.cp_tasks.write().await;
+        let _cp_tasks = self.cp_tasks.write().await;
         //cp_tasks.insert(cp_id, task);
 
         cp_id

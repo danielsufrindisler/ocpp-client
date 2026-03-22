@@ -1,9 +1,9 @@
 use crate::common_client::CommonOcppClientBase;
 use crate::ocpp_1_6::ocpp_1_6_error::OCPP1_6Error;
 use crate::raw_ocpp_common_call::{RawOcppCommonError, RawOcppCommonResult};
-use crate::reconnectws::ReconnectWs;
+
 use futures::SinkExt;
-use log::{debug, error, info, log_enabled, trace, warn, Level};
+use log::{info, warn};
 use rust_ocpp::v1_6::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v1_6::messages::boot_notification::{
     BootNotificationRequest, BootNotificationResponse,

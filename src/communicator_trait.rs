@@ -28,5 +28,11 @@ pub trait OCPPCommunicator: Send + Sync {
         reference: ChargeSessionReference,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+    async fn send_status_notification(
+        &self,
+        connector_id: u32,
+        status: String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     fn get_base(&mut self) -> &mut CommonOcppClientBase;
 }

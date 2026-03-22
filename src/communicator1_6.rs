@@ -6,19 +6,18 @@ use rust_ocpp::v1_6::messages::start_transaction::StartTransactionRequest;
 use rust_ocpp::v1_6::messages::stop_transaction::StopTransactionRequest;
 use rust_ocpp::v1_6::types::Reason;
 use rust_ocpp::v1_6::messages::meter_values::MeterValuesRequest;
-use tokio_tungstenite::tungstenite::http::request;
 
 use crate::common_client::CommonOcppClientBase;
 use crate::communicator_trait::OCPPCommunicator;
 use crate::cp_data::{
-    AuthorizationType, CPData, ChargeSessionReference, EventTypes, MessageReference, RFID,
+    AuthorizationType, CPData, ChargeSessionReference, EventTypes, MessageReference,
 };
 use crate::ocpp_1_6::OCPP1_6Client;
 use crate::ocpp_deque::OCPPDeque;
 use crate::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError};
 use async_trait::async_trait;
 use chrono;
-use log::{debug, error, info, log_enabled, trace, warn, Level};
+use log::{debug, error, info, trace, warn};
 use rust_ocpp::v1_6::messages::get_configuration::{
     GetConfigurationRequest, GetConfigurationResponse,
 };
@@ -59,7 +58,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                              _: Option<MessageReference>,
                              _self_clone: OCPPDeque| {
             debug!("BootNotification callback invoked");
-            let cp_data_arc2 = Arc::clone(&cp_data_arc);
+            let cp_data_arc = cp_data_arc.clone();
             async move {
                 trace!("BootNotification callback invoked1");
 
@@ -67,7 +66,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                     "BootNotification response received for message ID {}: {:?}",
                     call.1, ocpp_result
                 );
-                let mut lock = cp_data_arc2.lock().await;
+                let mut lock = cp_data_arc.lock().await;
                 lock.booted = true;
                 trace!("Booted set to true");
             }
@@ -100,7 +99,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             let authorize_request = AuthorizeRequest {
                 id_tag: rfid.id_tag.clone(),
             };
-            let id_tag2 = rfid.id_tag.clone();
+            let _id_tag2 = rfid.id_tag.clone();
             //TODO Some Reference
             let response = self
                 .ocpp_deque
@@ -121,7 +120,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                                  reference: Option<MessageReference>,
                                  _self_clone: OCPPDeque| {
                 trace!("Authorize callback invoked");
-                let cp_data_arc2 = Arc::clone(&cp_data_arc);
+                let cp_data_arc = cp_data_arc.clone();
                 async move {
                     trace!("Authorize callback invoked1");
                     let authorize_response: AuthorizeResponse =
@@ -132,7 +131,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                         authorize_response
                     );
 
-                    let mut lock = cp_data_arc2.lock().await;
+                    let mut lock = cp_data_arc.lock().await;
                     if authorize_response.id_tag_info.status
                         == crate::rust_ocpp::v1_6::types::AuthorizationStatus::Accepted
                     {
@@ -306,6 +305,13 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             trace!("StartTransaction failed to schedule");
         }
 
+        // TODO: Add callback for StartTransaction response
+        // let callback = ...;
+
+        // self.ocpp_deque
+        //     .handle_on_response(callback, "StartTransaction")
+        //     .await;
+
         Ok(())
     }
 
@@ -345,6 +351,13 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             error!("StopTransaction failed to schedule");
         }
 
+        // TODO: Add callback for StopTransaction response
+        // let callback = ...;
+
+        // self.ocpp_deque
+        //     .handle_on_response(callback, "StopTransaction")
+        //     .await;
+
         Ok(())
     }
 
@@ -365,7 +378,6 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         );
         // Get Measurands and Interval from device model
         let mut measurands_str = String::new();
-        let mut interval = 60u32;
         
         for component in &data.variables.components {
             if component.name == "AlignedDataCtrlr" && component.evse.is_none() {
@@ -373,11 +385,6 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                     if var.name == "Measurands" {
                         if let Some(ref default_val) = var.default_value {
                             measurands_str = default_val.to_string();
-                        }
-                    }
-                    if var.name == "Interval" {
-                        if let Some(ref default_val) = var.default_value {
-                            interval = default_val.to_string().parse().unwrap_or(60);
                         }
                     }
                 }
@@ -450,6 +457,55 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             trace!("MeterValues is scheduled");
         } else {
             trace!("MeterValues failed to schedule");
+        }
+
+        Ok(())
+    }
+
+    async fn send_status_notification(
+        &self,
+        connector_id: u32,
+        status: String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use rust_ocpp::v1_6::types::ChargePointStatus;
+        use rust_ocpp::v1_6::types::ChargePointErrorCode;
+
+        let status_enum = match status.as_str() {
+            "Available" => ChargePointStatus::Available,
+            "Preparing" => ChargePointStatus::Preparing,
+            "Charging" => ChargePointStatus::Charging,
+            "SuspendedEVSE" => ChargePointStatus::SuspendedEVSE,
+            "SuspendedEV" => ChargePointStatus::SuspendedEV,
+            "Finishing" => ChargePointStatus::Finishing,
+            "Reserved" => ChargePointStatus::Reserved,
+            "Unavailable" => ChargePointStatus::Unavailable,
+            "Faulted" => ChargePointStatus::Faulted,
+            _ => ChargePointStatus::Available,
+        };
+
+        let status_notification_request = rust_ocpp::v1_6::messages::status_notification::StatusNotificationRequest {
+            connector_id,
+            status: status_enum,
+            error_code: ChargePointErrorCode::ConnectorLockFailure, // TODO: proper error code
+            info: None,
+            timestamp: Some(chrono::Utc::now()),
+            vendor_id: None,
+            vendor_error_code: None,
+        };
+
+        let response = self
+            .ocpp_deque
+            .do_send_request_queued(
+                status_notification_request,
+                "StatusNotification",
+                Some(MessageReference::NoReference),
+            )
+            .await;
+
+        if let Ok(_) = response {
+            trace!("StatusNotification is scheduled");
+        } else {
+            trace!("StatusNotification failed to schedule");
         }
 
         Ok(())

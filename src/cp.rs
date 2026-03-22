@@ -1,10 +1,7 @@
 use crate::communicator1_6::OCPPCommunicator1_6;
 use crate::communicator2_0_1::OCPPCommunicator2_0_1;
 use crate::communicator_trait::OCPPCommunicator;
-use crate::cp_data::{
-    self, AuthorizationType, CPData, ChargeSession, ChargeSessionReference, EventTypes,
-    GetVariableData, MessageReference, ScheduledEvents, EV, EVSE, RFID,
-};
+use crate::cp_data::{CPData, ChargeSessionReference, EventTypes, GetVariableData, MessageReference, EV, EVSE,};
 use crate::ocpp_1_6::OCPP1_6Client;
 use crate::ocpp_2_0_1::OCPP2_0_1Client;
 use crate::ocpp_deque::OCPPDeque;
@@ -56,6 +53,7 @@ impl CP {
                     ev: None,
                     charging_task: None,
                     meter_energy,
+                    status: "Available".to_string(),
                 };
                 evses.insert(component.evse.unwrap(), evse);
             }
@@ -196,7 +194,7 @@ impl CP {
         let mut res: GetVariableData = serde_json::from_str(&data).expect("Unable to parse");
         //info!("{:?}", &res);
 
-        for mut component in &mut res.components {
+        for component in &mut res.components {
             let mut component_string = component.name.clone();
             if let Some(evse) = component.evse {
                 component_string.push_str(evse.to_string().as_str());
@@ -206,7 +204,7 @@ impl CP {
             }
             //                        + if component.connector.is_some() { component.connector.unwrap().to_string().as_str() } else { "" };
 
-            for mut variable in &mut component.variables {
+            for variable in &mut component.variables {
                 if variable.ocpp16_key.is_none() {
                     variable.ocpp16_key = Some(component_string.clone() + variable.name.as_str());
                 }
@@ -293,11 +291,25 @@ impl CP {
                         }
                         EventTypes::Plug(reference, ev) => {
                             let mut cp_data_guard = cp_data.lock().await;
+                            let is_authorized = cp_data_guard.authorization.is_some();
                             if let Some(evse) = cp_data_guard.evses.get_mut(&reference.evse_index) {
                                 evse.plugged_in = Some(reference.connector_id);
                                 evse.ev = Some(ev.clone());
+                                // Set status to Preparing if authorized, otherwise Available
+                                if is_authorized {
+                                    evse.status = "Preparing".to_string();
+                                } else {
+                                    evse.status = "Available".to_string();
+                                }
                             }
                             drop(cp_data_guard);
+                            
+                            // Send StatusNotification
+                            if let Some(comm_inner) = comm.lock().await.as_ref() {
+                                let status = if is_authorized { "Preparing" } else { "Available" };
+                                let _ = comm_inner.send_status_notification(1, status.to_string()).await;
+                            }
+                            
                             CP::check_start_charging(
                                 cp_data.clone(),
                                 reference.evse_index,
@@ -319,13 +331,20 @@ impl CP {
 
                                 evse.plugged_in = None;
                                 evse.ev = None;
+                                evse.status = "Available".to_string();
+                            }
+                            drop(cp_data_guard);
+                            
+                            // Send StatusNotification
+                            if let Some(comm_inner) = comm.lock().await.as_ref() {
+                                let _ = comm_inner.send_status_notification(1, "Available".to_string()).await;
                             }
                         }
-                        EventTypes::RemoteStart(reference) => {
+                        EventTypes::RemoteStart(_reference) => {
                             // Spawn a charging task that updates SOC every second
-                            let cp_data_clone = cp_data.clone();
+                            let _cp_data_clone = cp_data.clone();
                         }
-                        EventTypes::RemoteStop(reference) => {
+                        EventTypes::RemoteStop(_reference) => {
                             // todo: handle remote stop
                         }
                         EventTypes::CommunicationStart => {
@@ -389,6 +408,7 @@ impl CP {
         let mut data = cp_data.lock().await;
         if data.evses[&evse_index].started {
             data.evses.get_mut(&evse_index).unwrap().started = false;
+            let connector_id = data.evses[&evse_index].plugged_in.unwrap_or(0);
             info!("Stopping the charge charging for evse {}", evse_index);
 
             if data
@@ -411,12 +431,11 @@ impl CP {
             if let Some(_comm) = communicator.lock().await.as_ref() {
                 info!("Sending stop for evse {}", evse_index);
 
-                let _reference: MessageReference =
-                    MessageReference::ChargeSession(ChargeSessionReference {
-                        evse_index,
-                        connector_id: 1, //todo
-                    });
-                //let _ = _comm.send_stop_transaction(_reference).await;
+                let reference = ChargeSessionReference {
+                    evse_index,
+                    connector_id: connector_id, //todo
+                };
+                let _ = _comm.send_stop_transaction(reference).await;
             }
         }
     }
@@ -427,7 +446,7 @@ impl CP {
         communicator: Arc<Mutex<Option<Box<dyn OCPPCommunicator>>>>,
     ) {
         debug!("Checking if can start charging for evse {}", evse_index);
-        let mut data = cp_data.lock().await;
+        let data = cp_data.lock().await;
         debug!("Checking if can start charging for evse {},  Authorized: {}, Plugged in: {:?}, Started: {:?}",
             evse_index, data.authorization.is_some(), data.evses[&evse_index].plugged_in, data.evses[&evse_index].started);
         if data.authorization.is_some()
@@ -561,4 +580,6 @@ impl CP {
             ev.power_vs_soc[ev.power_vs_soc.len() - 1].1
         }
     }
+
+
 }

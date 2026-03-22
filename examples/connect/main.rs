@@ -1,15 +1,8 @@
 use log::info;
-use ocpp_client::cp::CP;
-use ocpp_client::cp_data::{
-    AuthorizationType, CPData, ChargeSessionReference, EventTypes, ScheduledEvents, EV, EVSE, RFID,
-};
 use ocpp_client::rest_server::start_rest_server;
 use reqwest;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -17,90 +10,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::env::set_var("RUST_LOG", "INFO");
     }
 
-    let ev: EV = EV {
-        power_vs_soc: vec![(0.0, 50.0), (80.0, 30.0), (100.0, 0.0)],
-        soc: 20.0,
-        final_soc: 80.0,
-        capacity: 50.0,
-        power: 0.0,
-    };
-
     env_logger::init();
 
-    info!("Starting CP example");
-    let variables = CP::read_variables_from_file();
-    CP::list_components(variables.clone());
-
-    let cp_data = Arc::new(Mutex::new(CPData {
-        username: Some("RustTest002".to_string()),
-        password: Some("RustyRustRustRust".to_string()),
-        supported_protocol_versions: Some("ocpp1.6, ocpp2.0.1".to_string()),
-        selected_protocol: Some("ocpp1.6".to_string()),
-        serial: "RustTest002".to_string(),
-        model: "RustModel".to_string(),
-        vendor: "RustVendor".to_string(),
-        booted: false,
-        evses: HashMap::new(),
-        variables: variables.clone(),
-        base_url: "ws://127.0.0.1:8180/steve/websocket/CentralSystemService/".to_string(),
-        events: vec![
-            ScheduledEvents {
-                duration: 2,
-                event: EventTypes::Authorize(AuthorizationType::RFID(RFID {
-                    id_tag: "TAG123".to_string(),
-                })),
-            },
-            ScheduledEvents {
-                duration: 2,
-                event: EventTypes::CommunicationStop,
-            },
-            ScheduledEvents {
-                duration: 10,
-                event: EventTypes::CommunicationStart,
-            },
-            ScheduledEvents {
-                duration: 2,
-                event: EventTypes::Authorize(AuthorizationType::RFID(RFID {
-                    id_tag: "TAG123".to_string(),
-                })),
-            },
-            ScheduledEvents {
-                duration: 2,
-                event: EventTypes::Plug(
-                    ChargeSessionReference {
-                        evse_index: 1,
-                        connector_id: 1,
-                    },
-                    ev.clone(),
-                ),
-            },
-            ScheduledEvents {
-                duration: 180,
-                event: EventTypes::Unplug(ChargeSessionReference {
-                    evse_index: 1,
-                    connector_id: 1,
-                }),
-            },
-        ],
-        authorization: None,
-    }));
-
-    let mut _cp1 = CP {
-        communicator: Arc::new(Mutex::new(None)),
-        client: None,
-        data: cp_data,
-    };
-    //"wss://ocpp.coreevi.com/ocpp2.0.1/65/RustTest002"
-
     // Start REST API server in a background task
-    let rest_server = start_rest_server().await;
+    let _rest_server = start_rest_server().await;
 
     // Spawn REST client task to interact with the API
-    let rest_client_task = tokio::spawn(async { rest_client_example().await });
+    let _rest_client_task = tokio::spawn(async { rest_client_example().await });
 
-    // Run CP in main task while REST server runs in background
-
-    //let cp_task = _cp1.run().await;
 
     info!("CP and REST server are running. Press Ctrl-C to exit.");
     tokio::signal::ctrl_c().await?;
@@ -181,7 +98,7 @@ async fn rest_client_example() -> Result<(), String> {
                 "capacity": 88.0
             },
             {
-                "duration": 180,
+                "duration": 60,
                 "event_type": "unplug",
                 "evse_index": 1,
                 "connector_id": 1

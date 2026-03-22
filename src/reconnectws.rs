@@ -1,4 +1,4 @@
-use log::{debug, error, info, log_enabled, trace, Level};
+use log::info;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;

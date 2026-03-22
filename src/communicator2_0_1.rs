@@ -121,7 +121,7 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
                              reference: Option<MessageReference>,
                              _self_clone: OCPPDeque| {
             trace!("Authorize callback invoked");
-            let cp_data_arc2 = Arc::clone(&cp_data_arc);
+            let cp_data_arc = cp_data_arc.clone();
             async move {
                 trace!("Authorize callback invoked1");
                 let authorize_response: AuthorizeResponse =
@@ -132,7 +132,7 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
                     authorize_response
                 );
 
-                let mut lock = cp_data_arc2.lock().await;
+                let mut lock = cp_data_arc.lock().await;
                 if authorize_response.id_token_info.status == AuthorizationStatusEnumType::Accepted
                 {
                     if let Some(MessageReference::EventIndex(event_index)) = reference {
@@ -176,10 +176,10 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
         // Register GetVariables handler
         let cp_data_arc = Arc::clone(&self.data);
         let callback = move |_request: GetVariablesRequest, _self_clone: OCPP2_0_1Client| {
-            let cp_data_arc2 = Arc::clone(&cp_data_arc);
+            let cp_data_arc = cp_data_arc.clone();
             async move {
                 debug!("Received GetVariables request");
-                let data = cp_data_arc2.lock().await;
+                let data = cp_data_arc.lock().await;
                 
                 // Log available variables for debugging
                 info!("GetVariables request: responding with available variables");
@@ -207,7 +207,7 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
         reference: ChargeSessionReference,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let data = self.data.lock().await;
-        let evse = &data.evses[&reference.evse_index];
+        let _evse = &data.evses[&reference.evse_index];
 
         let _id_tag;
 
@@ -377,6 +377,16 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
             trace!("MeterValues failed to schedule");
         }
 
+        Ok(())
+    }
+
+    async fn send_status_notification(
+        &self,
+        _connector_id: u32,
+        _status: String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // TODO: Implement StatusNotification for OCPP 2.0.1
+        // OCPP 2.0.1 uses different status reporting mechanism
         Ok(())
     }
 }

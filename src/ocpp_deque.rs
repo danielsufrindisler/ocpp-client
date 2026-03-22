@@ -2,7 +2,7 @@ use crate::common_client::CommonOcppClientBase;
 use crate::cp_data::MessageReference;
 use crate::raw_ocpp_common_call::RawOcppCommonCall;
 use crate::raw_ocpp_common_call::RawOcppCommonError;
-use log::{debug, error, info, log_enabled, trace, Level};
+use log::{debug, trace};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;

@@ -1,8 +1,7 @@
-use crate::client::Client;
 use crate::reconnectws::ReconnectWs;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use log::{debug, error, info, log_enabled, Level};
+use log::debug;
 use std::time::Duration;
 use stream_reconnect::ReconnectOptions;
 use tokio::sync::mpsc;
@@ -13,11 +12,7 @@ use tokio_tungstenite::tungstenite::http::header::{
 use tokio_tungstenite::tungstenite::http::Request;
 use url::Url;
 
-#[cfg(feature = "ocpp_1_6")]
-use crate::ocpp_1_6::OCPP1_6Client;
 
-#[cfg(feature = "ocpp_2_0_1")]
-use crate::ocpp_2_0_1::OCPP2_0_1Client;
 
 pub async fn setup_socket(
     address: &str,

@@ -2,7 +2,7 @@ use crate::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError, RawOcpp
 use crate::reconnectws::ReconnectWs;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt, TryStreamExt};
-use log::{debug, error, info, log_enabled, warn, Level};
+use log::{debug, error, info, warn};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast::Sender;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::Utf8Bytes;
@@ -72,8 +72,8 @@ impl CommonOcppClientBase {
         let request_senders2 = self.request_senders.clone();
         let ping_sender2 = self.ping_sender.clone();
 
-        let mut stream_lock = self.stream.clone();
-        let mut sink_lock = self.sink.clone();
+        let stream_lock = self.stream.clone();
+        let sink_lock = self.sink.clone();
         let username = self.username.clone();
         let password = self.password.clone();
         let address_str = self.address_str.clone();
@@ -100,7 +100,7 @@ impl CommonOcppClientBase {
                         match stream3.try_lock() {
                             Ok(mut lock) => {
                                 if let Some(stream2) = lock.as_mut() {
-                                    stream2.map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e))
+                                    let _ = stream2.map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e))
                 .try_for_each(|message| {
                     let response_channels2 = response_channels2.clone();
                     let ping_sender = ping_sender2.clone();
@@ -240,7 +240,6 @@ impl CommonOcppClientBase {
                             }
                         }
                     }
-                    ()
                 });
                 debug!("handle is for inner receive loop {}", handle.id());
                 handle_holder.lock().await.replace(handle);

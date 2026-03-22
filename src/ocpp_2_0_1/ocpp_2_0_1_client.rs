@@ -1,9 +1,9 @@
 use crate::common_client::CommonOcppClientBase;
 use crate::ocpp_2_0_1::OCPP2_0_1Error;
 use crate::raw_ocpp_common_call::{RawOcppCommonError, RawOcppCommonResult};
-use crate::reconnectws::ReconnectWs;
+
 use futures::SinkExt;
-use log::{debug, error, info, log_enabled, trace, warn, Level};
+use log::warn;
 use rust_ocpp::v2_0_1::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v2_0_1::messages::boot_notification::{
     BootNotificationRequest, BootNotificationResponse,
@@ -160,7 +160,7 @@ use rust_ocpp::v2_0_1::messages::update_firmware::{UpdateFirmwareRequest, Update
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::future::Future;
-use std::usize;
+
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
