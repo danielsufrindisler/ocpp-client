@@ -1,170 +1,244 @@
 use log::info;
+use ocpp_client::logger::init_logger;
 use ocpp_client::rest_server::start_rest_server;
 use reqwest;
 use serde_json::{json, Value};
+use std::env;
+use std::thread::sleep;
 use std::time::Duration;
+
+#[derive(Debug, Clone)]
+struct CliArgs {
+    run_server: bool,
+    run_client: bool,
+    test_file: Option<String>,
+    speed_multiplier: f64,
+    test_length: u64,
+}
+
+impl CliArgs {
+    fn parse() -> Result<Self, String> {
+        let args: Vec<String> = env::args().collect();
+        
+        // If no arguments, show help
+        if args.len() == 1 {
+            Self::print_help();
+            std::process::exit(0);
+        }
+
+        // Check for --help
+        if args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
+            Self::print_help();
+            std::process::exit(0);
+        }
+
+        let mut cli_args = CliArgs {
+            run_server: args.contains(&"--server".to_string()),
+            run_client: args.contains(&"--client".to_string()),
+            test_file: None,
+            speed_multiplier: 1.0,
+            test_length: 1000,
+        };
+
+        // If neither server nor client specified, default to both
+        if !cli_args.run_server && !cli_args.run_client {
+            cli_args.run_server = true;
+            cli_args.run_client = true;
+        }
+
+        // Parse --test argument
+        if let Some(pos) = args.iter().position(|x| x == "--test") {
+            if let Some(file) = args.get(pos + 1) {
+                cli_args.test_file = Some(file.clone());
+            } else {
+                return Err("--test requires a filename argument".to_string());
+            }
+        }
+
+        // Parse --speed argument
+        if let Some(pos) = args.iter().position(|x| x == "--speed") {
+            if let Some(speed_str) = args.get(pos + 1) {
+                cli_args.speed_multiplier = speed_str
+                    .parse()
+                    .map_err(|_| format!("Invalid speed value: {}", speed_str))?;
+                if cli_args.speed_multiplier <= 0.0 {
+                    return Err("Speed multiplier must be positive".to_string());
+                }
+            } else {
+                return Err("--speed requires a numeric argument".to_string());
+            }
+        }
+
+        // Parse --test_length argument
+        if let Some(pos) = args.iter().position(|x| x == "--test_length") {
+            if let Some(length_str) = args.get(pos + 1) {
+                cli_args.test_length = length_str
+                    .parse()
+                    .map_err(|_| format!("Invalid test_length value: {}", length_str))?;
+                if cli_args.test_length == 0 {
+                    return Err("Test length must be greater than 0".to_string());
+                }
+            } else {
+                return Err("--test_length requires a numeric argument".to_string());
+            }
+        }
+        // Validate: test file only with client mode
+        if cli_args.test_file.is_some() && !cli_args.run_client {
+            return Err("--test can only be used with --client mode".to_string());
+        }
+
+            info!(
+        "OCPP Client starting with options: run_server={}, run_client={}, test_file={:?}, speed={}, test_length={}",
+        cli_args.run_server, cli_args.run_client, cli_args.test_file, cli_args.speed_multiplier, cli_args.test_length
+    );
+
+        Ok(cli_args)
+    }
+
+    fn print_help() {
+        let help = r#"
+OCPP Client Simulator - CLI Reference
+======================================
+
+USAGE:
+    ocpp-client [OPTIONS]
+
+OPTIONS:
+    --server                Start only the REST API server
+    --client                Enable client mode (make requests/load test files)
+    --test <FILE>           Load test configuration from JSON file (requires --client)
+    --speed <MULTIPLIER>    Simulation speed multiplier (default: 1.0)
+                           e.g., --speed 2.0 runs 2x faster
+    --test_length <SECONDS> Duration to run the simulation (default: 1000)
+    --help, -h             Show this help message
+
+MODES:
+    1. Server only:
+       ocpp-client --server
+       Starts REST API server for dynamic interaction
+
+    2. Client with test file (Static):
+       ocpp-client --client --test test_0_1.json
+       Loads configuration, runs events, exits when complete
+
+    3. Interactive (Server + Client):
+       ocpp-client --server --client
+       Combines REST API with CLI interaction
+
+EXAMPLES:
+    # Start server at http://localhost:3000
+    ocpp-client --server
+
+    # Run static test 2x faster
+    ocpp-client --server --client --test test_0_1.json --speed 2.0 --run_for=1000
+
+    # Start interactive mode
+    ocpp-client --server --client --speed 0.5
+
+REST API ENDPOINTS:
+    POST   /cp                    Create new charger
+    GET    /status                Get system status
+    POST   /ID/events             Add event to charger  
+    GET    /ID/chargers           List chargers
+
+For detailed information, see REST_API.md and CLI_REFERENCE.md
+"#;
+        println!("{}", help);
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if std::env::var_os("RUST_LOG").is_none() {
-        std::env::set_var("RUST_LOG", "INFO");
+    init_logger();
+    println!("OCPP Client Simulator starting up...");
+    let args = CliArgs::parse()?;
+    println!("OCPP Client Simulator Parsed Args");
+    println!("logs can be found in ./logs/ with 1 general log and 1 log per charger");
+
+
+    if args.run_server {
+        // Start REST API server in a background task
+        let _rest_server = start_rest_server().await;
+        info!("REST Server started at http://127.0.0.1:3000");
     }
 
-    env_logger::init();
+    if args.run_client {
+        if let Some(test_file) = &args.test_file {
+            // Static mode: load test file and run it
+            info!("Static mode: Loading test configuration from {}", test_file);
 
-    // Start REST API server in a background task
-    let _rest_server = start_rest_server().await;
+            // Give REST server a moment to start if both are running
+            if args.run_server {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
 
-    // Spawn REST client task to interact with the API
-    let _rest_client_task = tokio::spawn(async { rest_client_example().await });
+            rest_client_example(test_file, args.speed_multiplier, args.test_length).await?;
 
+            // In static mode, exit after test completes
+            info!("Test completed, exiting.");
+            return Ok(());
+        } else {
+            // Interactive mode: just keep running and wait for Ctrl-C
+            info!("Interactive mode started. Send requests to http://127.0.0.1:3000");
+            info!("Press Ctrl-C to exit.");
+        }
+    }
 
-    info!("CP and REST server are running. Press Ctrl-C to exit.");
+    // Wait for Ctrl-C in server or interactive mode
     tokio::signal::ctrl_c().await?;
-    // Handle Ctrl-C gracefully but let the servers continue running
+    info!("Shutdown signal received, exiting gracefully.");
 
     Ok(())
 }
 
-async fn rest_client_example() -> Result<(), String> {
-    println!("\n\n=== REST Client Example - Creating CP through REST API ===\n");
-
-    // Wait a moment for the server to start
-    tokio::time::sleep(Duration::from_millis(500)).await;
+async fn rest_client_example(
+    test_config: &str,
+    _speed_multiplier: f64,
+    test_length: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("=== REST Client - Loading test configuration ===");
 
     let client = reqwest::Client::new();
-    let base_url = "http://127.0.0.1:3000";
+    let rest_url = "http://127.0.0.1:3000";
 
-    // Step 1: Create a CP with serial "RustTest002"
-    println!("Step 1: Creating CP with serial 'RustTest002'...");
-    let cp_request = json!({
-        "username": "RustTest002",
-        "password": "RustyRustRustRust",
-        "vendor": "RustVendor",
-        "model": "RustModel",
-        "serial": "RustTest002",
-        "protocol": "ocpp1.6"
-    });
+    info!("Fetching test configuration from file: {}", test_config);
 
-    let cp_response = client
-        .post(&format!("{}/cp", base_url))
-        .json(&cp_request)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let config_text = std::fs::read_to_string(test_config)?;
+    let config_json: Value = serde_json::from_str(&config_text)?;
 
-    let cp_data: Value = cp_response.json().await.map_err(|e| e.to_string())?;
-    println!(
-        "Response: {}\n",
-        serde_json::to_string_pretty(&cp_data).map_err(|e| e.to_string())?
-    );
+    let cp_names = config_json
+        .get("cps")
+        .and_then(|v| v.as_array())
+        .ok_or("test config must contain cps array")?;
 
-    let cp_id = cp_data["cp_id"]
-        .as_u64()
-        .ok_or("Missing cp_id in response")?;
-    println!("Created CP with ID: {}\n", cp_id);
+    info!("Test config contains {} chargers", cp_names.len());
 
-    // Step 2: Add multiple events to the CP using bulk endpoint
-    println!("Step 2: Adding 6 events to CP using bulk endpoint...");
+    for cp_item in cp_names {
+        let cp_name = cp_item.as_str().ok_or("cp name must be string")?;
 
-    let events_request = json!({
-        "events": [
-            {
-                "duration": 2,
-                "event_type": "authorize",
-                "id_tag": "TAG123"
-            },
-            {
-                "duration": 2,
-                "event_type": "communication_stop"
-            },
-            {
-                "duration": 10,
-                "event_type": "communication_start"
-            },
-            {
-                "duration": 2,
-                "event_type": "authorize",
-                "id_tag": "TAG123"
-            },
-            {
-                "duration": 2,
-                "event_type": "plug",
-                "evse_index": 1,
-                "connector_id": 1,
-                "power_vs_soc": [[0.0, 50.0], [20.0, 105.0],[80.0, 105.0], [100.0, 2.0]],
-                "soc": 20.0,
-                "final_soc": 80.0,
-                "capacity": 88.0
-            },
-            {
-                "duration": 60,
-                "event_type": "unplug",
-                "evse_index": 1,
-                "connector_id": 1
-            }
-        ]
-    });
+        let cp_request = json!({
+            "name": cp_name,
+            "use_original": false
+        });
 
-    let bulk_response = client
-        .post(&format!("{}/cp/{}/events/bulk", base_url, cp_id))
-        .json(&events_request)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        let cp_response = client
+            .post(&format!("{}/cp", rest_url))
+            .json(&cp_request)
+            .send()
+            .await?;
 
-    let bulk_data: Value = bulk_response.json().await.map_err(|e| e.to_string())?;
-    println!(
-        "Add bulk events response: {}\n",
-        serde_json::to_string_pretty(&bulk_data).map_err(|e| e.to_string())?
-    );
-
-    // Step 3: Verify the CP was created and events were added
-    println!("Step 3: Verifying CP creation using GET API...");
-
-    let verify_response = client
-        .get(&format!("{}/cp/{}/data", base_url, cp_id))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let verified_data: Value = verify_response.json().await.map_err(|e| e.to_string())?;
-    println!(
-        "Verified CP data: {}\n",
-        serde_json::to_string_pretty(&verified_data).map_err(|e| e.to_string())?
-    );
-
-    // Check if the CP is the one we created
-    let serial = verified_data["serial"]
-        .as_str()
-        .ok_or("Missing serial in verified data")?;
-    let events_count = verified_data["events_count"]
-        .as_u64()
-        .ok_or("Missing events_count in verified data")?;
-
-    if serial == "RustTest002" && events_count == 6 {
-        println!(
-            "✓ SUCCESS: CP with serial '{}' was properly created with {} events!",
-            serial, events_count
+        let cp_data: Value = cp_response.json().await?;
+        info!(
+            "Created charger '{}' with ID: {}",
+            cp_name,
+            cp_data
+                .get("cp_id")
+                .map(|v| v.to_string())
+                .unwrap_or("?".to_string())
         );
-    } else {
-        println!("✗ MISMATCH: Expected serial 'RustTest002' with 6 events, got serial '{}' with {} events", 
-                 serial, events_count);
     }
 
-    // Step 4: List all CPs
-    println!("\nStep 4: Listing all CPs...");
-    let list_response = client
-        .get(&format!("{}/cp", base_url))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let all_cps: Value = list_response.json().await.map_err(|e| e.to_string())?;
-    println!(
-        "All CPs: {}\n",
-        serde_json::to_string_pretty(&all_cps).map_err(|e| e.to_string())?
-    );
-
+    info!("Test configuration loaded successfully");
+    tokio::time::sleep(Duration::from_secs(test_length)).await; // Wait a moment before exiting
     Ok(())
 }

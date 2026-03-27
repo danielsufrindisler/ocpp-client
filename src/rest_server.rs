@@ -1,8 +1,9 @@
 use crate::cp::CP;
 use crate::cp_data::{
-    AuthorizationType, CPData, ChargeSessionReference, EventTypes,
+    AuthorizationType, CPData, ChargeSessionReference, EventInjectionMessage, EventTypes,
     ScheduledEvents, EV, RFID,
 };
+use crate::logger::CP_ID;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -15,16 +16,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
+use tokio::sync::mpsc;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateCPRequest {
-    pub username: String,
-    pub password: String,
-    pub vendor: String,
-    pub model: String,
-    pub serial: String,
-    pub protocol: String,
+    pub name: String,
+    #[serde(default)]
+    pub use_original: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +73,7 @@ pub struct CPStore {
             tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
         >,
     >,
+    pub event_channels: tokio::sync::RwLock<HashMap<usize, mpsc::Sender<EventInjectionMessage>>>,
     pub next_id: AtomicUsize,
 }
 
@@ -84,6 +83,7 @@ impl CPStore {
             cps: tokio::sync::RwLock::new(HashMap::new()),
             cp_instances: tokio::sync::RwLock::new(HashMap::new()),
             cp_tasks: tokio::sync::RwLock::new(HashMap::new()),
+            event_channels: tokio::sync::RwLock::new(HashMap::new()),
             next_id: AtomicUsize::new(0),
         }
     }
@@ -91,24 +91,40 @@ impl CPStore {
     pub async fn create_cp(&self, request: CreateCPRequest) -> usize {
         let cp_id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
-        let variables = CP::read_variables_from_file();
+        let cp_file_name = request.name.clone();
+        let use_original = request.use_original.unwrap_or(false);
+
+        let (cp_config, variables) = CP::prepare_cp_variables_files(&cp_file_name, use_original)
+            .expect("Failed to prepare CP variables files");
 
         CP::list_components(variables.clone());
 
+        let cp_info = cp_config.cp.unwrap_or(crate::cp_data::CPFileInfo {
+            username: None,
+            password: None,
+            vendor: None,
+            model: None,
+            serial: None,
+            protocol: None,
+            base_url: None,
+        });
+
         let cp_data = CPData {
-            username: Some(request.username),
-            password: Some(request.password),
+            username: cp_info.username.clone(),
+            password: cp_info.password.clone(),
             supported_protocol_versions: Some("ocpp1.6, ocpp2.0.1".to_string()),
-            selected_protocol: Some(request.protocol),
-            serial: request.serial.clone(),
-            model: request.model,
-            vendor: request.vendor,
+            selected_protocol: cp_info.protocol.or(Some("ocpp1.6".to_string())),
+            serial: cp_info.serial.unwrap_or_else(|| format!("cp_{}", cp_id)),
+            model: cp_info.model.unwrap_or_else(|| "unknown".to_string()),
+            vendor: cp_info.vendor.unwrap_or_else(|| "unknown".to_string()),
             booted: false,
             evses: HashMap::new(),
-            events: Vec::new(),
+            events: cp_config.events.clone(),
             authorization: None,
             variables,
-            base_url: "ws://127.0.0.1:8180/steve/websocket/CentralSystemService/".to_string(),
+            base_url: cp_info.base_url.unwrap_or_else(|| "".to_string()),
+            variables_file_name: cp_file_name,
+            use_original,
         };
 
         let cp_data_arc = Arc::new(tokio::sync::Mutex::new(cp_data));
@@ -116,30 +132,36 @@ impl CPStore {
         cps.insert(cp_id, cp_data_arc.clone());
         drop(cps);
 
+        // Create event injection channel
+        let (event_tx, event_rx) = mpsc::channel::<EventInjectionMessage>(100);
+        let mut event_channels = self.event_channels.write().await;
+        event_channels.insert(cp_id, event_tx);
+        drop(event_channels);
+
         // Create CP instance and spawn the run task
         let mut cp = CP {
             communicator: Arc::new(tokio::sync::Mutex::new(None)),
             client: None,
             data: cp_data_arc,
+            event_rx: Some(event_rx),
         };
 
-        let _task = tokio::spawn(async move {
-            info!(
-                "Starting CP {} with serial {} now",
-                cp_id,
-                cp.data.lock().await.serial
-            );
-            let _ = cp.run().await;
-            info!(
-                "Starting CP {} with serial {} now",
-                cp_id,
-                cp.data.lock().await.serial
-            );
+        let task = tokio::spawn(async move {
+            CP_ID
+                .scope(cp_id, async {
+                    info!(
+                        "Starting CP {} with serial {} now",
+                        cp_id,
+                        cp.data.lock().await.serial
+                    );
+                    cp.run().await
+                })
+                .await
         });
         info!("here");
 
-        let _cp_tasks = self.cp_tasks.write().await;
-        //cp_tasks.insert(cp_id, task);
+        let mut cp_tasks = self.cp_tasks.write().await;
+        cp_tasks.insert(cp_id, task);
 
         cp_id
     }
@@ -225,7 +247,51 @@ impl CPStore {
                 _ => return Err(format!("unknown event type: {}", event_type)),
             };
 
-            cp.events.push(ScheduledEvents { duration, event });
+            // Add to events vec for persistence
+            cp.events.push(ScheduledEvents {
+                duration,
+                event: event.clone(),
+            });
+
+            // Try to inject event into running loop via channel
+            let event_channels = self.event_channels.read().await;
+            if let Some(tx) = event_channels.get(&cp_id) {
+                if let Err(e) = tx
+                    .send(EventInjectionMessage::InsertEvent {
+                        event: event.clone(),
+                        duration_secs: duration,
+                    })
+                    .await
+                {
+                    log::warn!("Failed to inject event into CP {} event loop: {}", cp_id, e);
+                }
+            }
+            drop(event_channels);
+
+            // persist events + metadata to CP JSON
+            let config = crate::cp_data::CPConfigFile {
+                cp: Some(crate::cp_data::CPFileInfo {
+                    username: cp.username.clone(),
+                    password: cp.password.clone(),
+                    vendor: Some(cp.vendor.clone()),
+                    model: Some(cp.model.clone()),
+                    serial: Some(cp.serial.clone()),
+                    protocol: cp.selected_protocol.clone(),
+                    base_url: Some(cp.base_url.clone()),
+                }),
+                events: cp.events.clone(),
+                components: cp.variables.components.clone(),
+            };
+
+            if let Err(e) =
+                CP::save_cp_config_file(&format!("./data/{}.json", cp.variables_file_name), &config)
+            {
+                log::warn!(
+                    "Failed to persist CP configuration after event update: {:?}",
+                    e
+                );
+            }
+
             Ok(())
         } else {
             Err(format!("CP with ID {} not found", cp_id))
@@ -400,7 +466,7 @@ pub async fn start_rest_server() -> tokio::task::JoinHandle<Result<(), std::io::
             .expect("Failed to bind REST API to port 3000");
 
         println!("REST API Server running on http://127.0.0.1:3000");
-        println!("Try: curl -X POST http://localhost:3000/cp -H 'Content-Type: application/json' -d '{{\"username\":\"CP1\",\"password\":\"pass\",\"vendor\":\"V\",\"model\":\"M\",\"serial\":\"SN\",\"protocol\":\"ocpp1.6\"}}'\n");
+        println!("Try: curl -X POST http://localhost:3000/cp -H 'Content-Type: application/json' -d '{{\"name\":\"0\",\"use_original\":false}}'\n");
 
         axum::serve(listener, app).await
     })

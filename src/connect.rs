@@ -12,8 +12,6 @@ use tokio_tungstenite::tungstenite::http::header::{
 use tokio_tungstenite::tungstenite::http::Request;
 use url::Url;
 
-
-
 pub async fn setup_socket(
     address: &str,
     protocols: &str,

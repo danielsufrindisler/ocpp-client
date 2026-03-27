@@ -1,98 +1,235 @@
-# OCPP CLI Quick Reference Guide
+# OCPP Client - CLI Reference Guide
 
-## Overview
-The CLI module provides a JSON-based interface for creating and managing virtual charging stations. This is designed for AI agents to control OCPP charger simulations.
+This document provides complete reference for using the OCPP Client Simulator in all three modes: server-only, static testing, and interactive.
 
-## Getting Help
+## Quick Start
 
-```rust
-// Display comprehensive help text
-let help_text = ocpp_client::cli::cli_help();
-println!("{}", help_text);
+Show help:
+```bash
+ocpp-client --help
 ```
 
-## Command Examples
+Start server (interactive mode via REST API):
+```bash
+ocpp-client --server
+```
 
-### 1. Create a Charger (EVSE)
+Run static test:
+```bash
+ocpp-client --client --test test_0_1.json
+```
 
-Create an AC charger with EVSE ID 1 and connector 1:
+---
+
+## Usage Modes
+
+### Mode 1: Server Only (`--server`)
+
+Starts a REST API server for dynamic interaction. Chargers and events are created via HTTP requests.
+
+```bash
+ocpp-client --server
+```
+
+**Best for:** 
+- Web UI development
+- AI agents making dynamic requests
+- Manual testing via curl/Postman
+
+**Output:**
+```
+REST Server started at http://127.0.0.1:3000
+```
+
+**API is live and ready to accept:**
+- `POST /cp` - Create new charger
+- `GET /status` - Get system status
+- `POST /cp/{id}/events` - Add event to charger
+
+
+### Mode 2: Static (`--client --test <FILE>`)
+
+Loads a JSON test file, runs all chargers and events, then exits. No REST server.
+
+```bash
+ocpp-client --client --test test_0_1.json
+```
+
+**Best for:**
+- CI/CD pipelines
+- Reproducible test scenarios
+- AI generating test files
+
+**Flow:**
+1. Load test file
+2. Parse JSON configuration
+3. Create chargers
+4. Process all events in order
+5. Exit when complete
+
+**Exit status:** 0 on success, 1 on failure
+
+
+### Mode 3: Interactive (`--server --client`)
+
+Starts both REST API server AND allows CLI interaction. Run chargers dynamically.
+
+```bash
+ocpp-client --server --client
+```
+
+**Best for:**
+- Humans exploring the system
+- Mixed automated + manual testing
+- Web UI + API simultaneously
+
+**Features:**
+- REST API running at http://127.0.0.1:3000
+- Chargers can be added anytime via API
+- Press Ctrl-C to cleanly shutdown
+
+
+---
+
+## CLI Options
+
+### `--server`
+Start the REST API server. Creates HTTP endpoint at `http://127.0.0.1:3000`.
+
+**Can be combined with:** `--client`, `--speed`
+**Cannot be combined with:** (none - always compatible)
+
+### `--client`
+Enable client mode. Loads test configurations and creates chargers via API calls.
+
+**Can be combined with:** `--test`, `--server`, `--speed`
+**Cannot be combined with:** (none - always compatible except `--test` requires `--client`)
+
+### `--test <FILE>`
+Load test configuration from JSON file. **Requires `--client`.**
+
+**Argument:** Relative or absolute path to JSON file
+**Required when:** Running static tests
+**Example:** `--test data/test_0_1.json`
+
+### `--speed <MULTIPLIER>`
+Simulation speed multiplier. Controls how fast time flows in the simulator.
+
+**Default:** 1.0 (real-time)
+**Examples:**
+- `--speed 2.0` - Run 2x faster (events happen at 50% time)
+- `--speed 0.5` - Run 50% slower (events happen at 200% time)
+- `--speed 100` - Run 100x faster (for fast testing)
+
+**Constraint:** Must be positive number > 0
+
+**Can be combined with:** `--server`, `--client`, `--test`
+
+### `--help`, `-h`
+Display help message and exit.
+
+---
+
+## Test File Format
+
+Static tests use JSON configuration files. The format is:
 
 ```json
 {
-  "command": "CREATE_CHARGER",
-  "evse_id": 1,
-  "connector_id": 1,
-  "is_ac": true
+  "cps": [
+    "charger_1",
+    "charger_2"
+  ],
+  "events": [
+    {
+      "charger_id": "charger_1",
+      "event_type": "plug",
+      "duration": 5,
+      "evse_index": 1,
+      "connector_id": 1,
+      "ev_power": 7.4,
+      "ev_capacity": 60.0,
+      "ev_soc": 15.0,
+      "ev_final_soc": 85.0
+    }
+  ]
 }
 ```
 
-Create a DC charger:
+### JSON Structure
+
+#### `cps` (array, required)
+List of charger configuration names to load. These load from `data/device_model_<name>.json` files.
 
 ```json
-{
-  "command": "CREATE_CHARGER",
-  "evse_id": 2,
-  "connector_id": 1,
-  "is_ac": false
-}
+"cps": ["charger_1", "charger_2"]
 ```
 
-### 2. Create Events
+Each charger file should be a valid OCPP 2.0.1 device model JSON.
 
-#### Authorization Event (Immediate)
+#### `events` (array, optional)
+List of events to run in sequence. Events run in order specified.
+
+```json
+"events": [
+  { "event_type": "authorize", "duration": 0, "id_tag": "TAG_12345" },
+  { "event_type": "plug", "duration": 5, "evse_index": 1, "connector_id": 1, "ev_power": 7.4, "ev_capacity": 60.0, "ev_soc": 20.0, "ev_final_soc": 80.0 }
+]
+```
+
+### Event Properties
+
+#### Common
+- **duration** (u32, required): Seconds from NOW to trigger event (0 = immediate)
+- **event_type** (string, required): Type of event (see below)
+
+#### By Event Type
+
+##### `authorize`
+Trigger RFID authorization.
 
 ```json
 {
-  "command": "CREATE_EVENT",
   "event_type": "authorize",
   "duration": 0,
   "id_tag": "TAG_12345"
 }
 ```
 
-#### Plug EV (Delayed by 5 seconds)
+**Parameters:**
+- `duration` (u32): Delay before authorization
+- `id_tag` (string, optional): RFID tag ID. Default: "DEFAULT_TAG"
+
+##### `plug`
+Connect EV to charger.
 
 ```json
 {
-  "command": "CREATE_EVENT",
   "event_type": "plug",
   "duration": 5,
   "evse_index": 1,
   "connector_id": 1,
   "ev_power": 7.4,
-  "ev_capacity": 50.0,
+  "ev_capacity": 60.0,
   "ev_soc": 20.0,
   "ev_final_soc": 80.0
 }
 ```
 
-#### Remote Start Transaction (Server-initiated)
+**Parameters:**
+- `duration` (u32): Delay before plug
+- `evse_index` (u32, required): EVSE ID  
+- `connector_id` (u32, required): Connector ID on EVSE
+- `ev_power` (f32, optional): Charging power in kW. Default: 7.0
+- `ev_capacity` (f32, optional): EV battery capacity in kWh. Default: 50.0
+- `ev_soc` (f32, optional): Starting SOC 0-100%. Default: 20.0
+- `ev_final_soc` (f32, optional): Target SOC 0-100%. Default: 80.0
+
+##### `unplug`
+Disconnect EV from charger.
 
 ```json
 {
-  "command": "CREATE_EVENT",
-  "event_type": "remote_start",
-  "duration": 10,
-  "evse_index": 1,
-  "connector_id": 1
-}
-```
-
-#### Stop Charging (Local)
-
-```json
-{
-  "command": "CREATE_EVENT",
-  "event_type": "local_stop",
-  "duration": 300
-}
-```
-
-#### Unplug EV
-
-```json
-{
-  "command": "CREATE_EVENT",
   "event_type": "unplug",
   "duration": 600,
   "evse_index": 1,
@@ -100,193 +237,291 @@ Create a DC charger:
 }
 ```
 
-### 3. Query Status
+**Parameters:**
+- `duration` (u32): Delay before unplug
+- `evse_index` (u32, required): EVSE ID
+- `connector_id` (u32, required): Connector ID
 
-List all chargers:
-
-```json
-{
-  "command": "LIST_CHARGERS"
-}
-```
-
-List all scheduled events:
+##### `remote_start`
+Server-initiated charging start.
 
 ```json
 {
-  "command": "LIST_EVENTS"
+  "event_type": "remote_start",
+  "duration": 10,
+  "evse_index": 1,
+  "connector_id": 1
 }
 ```
 
-Get system status:
+**Parameters:**
+- `duration` (u32): Delay before remote start
+- `evse_index` (u32, required): EVSE ID
+- `connector_id` (u32, required): Connector ID
+
+##### `remote_stop`
+Server-initiated charging stop.
 
 ```json
 {
-  "command": "GET_STATUS"
+  "event_type": "remote_stop",
+  "duration": 300,
+  "evse_index": 1,
+  "connector_id": 1
 }
 ```
 
-## Usage in Code
+##### `local_stop`
+Local stop button pressed.
 
-### Basic Example
-
-```rust
-use ocpp_client::cli::{parse_command, build_event_from_command, cli_help};
-
-// Get help for user documentation
-let help = cli_help();
-println!("Available commands:\n{}", help);
-
-// Parse a command from JSON string
-let json = r#"{"command": "CREATE_CHARGER", "evse_id": 1, "connector_id": 1, "is_ac": true}"#;
-let cmd = parse_command(json).expect("Invalid JSON");
-
-// For CREATE_EVENT, convert to ScheduledEvents
-let json = r#"{"command": "CREATE_EVENT", "event_type": "authorize", "duration": 2, "id_tag": "TAG123"}"#;
-let cmd = parse_command(json).expect("Invalid JSON");
-if let Ok(event) = build_event_from_command(&cmd) {
-    // Use the event in your charger simulation
-    println!("Scheduled event: {:?}", event);
+```json
+{
+  "event_type": "local_stop",
+  "duration": 300
 }
 ```
 
-### With Response Handling
+**Parameters:**
+- `duration` (u32): Delay before local stop
 
-```rust
-use ocpp_client::cli::CliResponse;
-use serde_json::json;
+##### `communication_start`
+Simulate communication restoration.
 
-// Simulate processing a command
-match parse_command(command_json) {
-    Ok(cmd) => {
-        match cmd {
-            CliCommand::CreateCharger { evse_id, connector_id, is_ac } => {
-                // Process charger creation
-                let response = CliResponse::success(
-                    "Charger created successfully",
-                    Some(json!({
-                        "evse_id": evse_id,
-                        "connector_id": connector_id,
-                        "is_ac": is_ac
-                    }))
-                );
-                println!("{}", serde_json::to_string_pretty(&response).unwrap());
-            }
-            _ => {
-                // Handle other commands
-            }
-        }
+```json
+{
+  "event_type": "communication_start",
+  "duration": 60
+}
+```
+
+##### `communication_stop`
+Simulate communication loss.
+
+```json
+{
+  "event_type": "communication_stop",
+  "duration": 30
+}
+```
+
+---
+
+## REST API Reference
+
+### Base URL
+```
+http://127.0.0.1:3000
+```
+
+### Endpoints
+
+#### Create Charger
+```
+POST /cp
+Content-Type: application/json
+
+{
+  "name": "charger_1",
+  "use_original": false
+}
+```
+
+**Response (201):**
+```json
+{
+  "cp_id": 0,
+  "message": "Charge point created successfully"
+}
+```
+
+**Parameters:**
+- `name` (string, required): Device model name (loads from `data/device_model_<name>.json`)
+- `use_original` (boolean, optional): Use original config. Default: false
+
+---
+
+#### Get System Status
+```
+GET /status
+```
+
+**Response (200):**
+```json
+{
+  "chargers": [
+    {
+      "id": 0,
+      "name": "charger_1",
+      "serial": "ABC123",
+      "status": "Charging"
     }
-    Err(e) => {
-        let response = CliResponse::error(&e, Some("INVALID_JSON"));
-        println!("{}", serde_json::to_string_pretty(&response).unwrap());
-    }
+  ]
 }
 ```
 
-## Event Types Reference
+---
 
-| Type | Description | Required Params | Optional Params |
-|------|-------------|-----------------|-----------------|
-| `authorize` | RFID authorization | duration | id_tag |
-| `plug` | EV connects to charger | duration, evse_index, connector_id | ev_power, ev_capacity, ev_soc, ev_final_soc |
-| `unplug` | EV disconnects | duration, evse_index, connector_id | |
-| `remote_start` | Server starts charging | duration, evse_index, connector_id | |
-| `remote_stop` | Server stops charging | duration, evse_index, connector_id | |
-| `local_stop` | Local stop command | duration | |
-
-## Parameter Reference
-
-### Charger Parameters
-- `evse_id` (u32): Unique EVSE identifier (1-N)
-- `connector_id` (u32): Connector number per EVSE (typically 1-4)
-- `is_ac` (bool): true for AC charging, false for DC
-
-### Event Parameters
-- `duration` (u32): Seconds until event triggers (0 = immediate)
-- `evse_index` (u32): Which EVSE to use
-- `connector_id` (u32): Which connector on the EVSE
-- `id_tag` (string): RFID tag identifier (default: "DEFAULT_TAG")
-- `ev_power` (f32): Charging power in kW (default: 7.0)
-- `ev_capacity` (f32): Battery capacity in kWh (default: 50.0)
-- `ev_soc` (f32): Initial State of Charge 0-100% (default: 20.0)
-- `ev_final_soc` (f32): Target State of Charge 0-100% (default: 80.0)
-
-## AI Agent Integration
-
-### 1. Initialization
-```rust
-// Get help documentation
-let help = ocpp_client::cli::cli_help();
-// Parse to understand available commands
+#### Add Event to Charger
 ```
+POST /cp/{id}/events
+Content-Type: application/json
 
-### 2. Scenario Creation
-```rust
-// Create multiple chargers
-for i in 1..=4 {
-    let cmd = format!(r#"{{"command": "CREATE_CHARGER", "evse_id": {}, "connector_id": 1, "is_ac": true}}"#, i);
-    parse_command(&cmd).ok();
+{
+  "event_type": "plug",
+  "duration": 5,
+  "evse_index": 1,
+  "connector_id": 1,
+  "ev_power": 7.4,
+  "ev_capacity": 60.0,
+  "ev_soc": 20.0,
+  "ev_final_soc": 85.0
 }
-
-// Schedule events
-let events = vec![
-    r#"{"command": "CREATE_EVENT", "event_type": "authorize", "duration": 2, "id_tag": "TAG001"}"#,
-    r#"{"command": "CREATE_EVENT", "event_type": "plug", "duration": 5, "evse_index": 1, "connector_id": 1}"#,
-    r#"{"command": "CREATE_EVENT", "event_type": "remote_start", "duration": 10, "evse_index": 1, "connector_id": 1}"#,
-];
 ```
 
-### 3. Monitoring
-```rust
-// Check status
-let status_cmd = r#"{"command": "GET_STATUS"}"#;
-parse_command(status_cmd).ok();
-
-// List all events
-let list_cmd = r#"{"command": "LIST_EVENTS"}"#;
-parse_command(list_cmd).ok();
-```
-
-## Protocol Support
-
-The CLI works with both OCPP versions:
-
-- **OCPP 1.6**: StartTransaction, StopTransaction, MeterValues
-- **OCPP 2.0.1**: TransactionEvent, MeterValues, GetVariables
-
-The charger automatically handles the selected protocol version.
-
-## Error Handling
-
-All commands return consistent error responses:
-
+**Response (200):**
 ```json
 {
-  "success": false,
-  "message": "Event creation failed: missing required parameter 'evse_index'",
-  "error_code": "MISSING_PARAMETER"
+  "message": "Event queued successfully",
+  "queue_size": 5
 }
 ```
 
-Check the `success` field to determine if the command executed successfully.
+**Parameters:**
+- Same as JSON event format above
+- `duration` defaults to 0 if omitted (immediate)
 
-## Performance Notes
+---
 
-- Commands are processed synchronously
-- Event scheduling is non-blocking
-- Multiple chargers can be created and managed simultaneously
-- CLI parsing has minimal overhead (~1-2µs per command)
+## Usage Examples
 
-## Testing
-
-Run the CLI unit tests:
+### Example 1: Start Server
 
 ```bash
-cargo test --lib cli
+$ ocpp-client --server
+
+[2024-03-27 10:15:32] INFO: OCPP Client starting...
+[2024-03-27 10:15:32] INFO: REST Server started at http://127.0.0.1:3000
+[2024-03-27 10:15:32] INFO: Interactive mode started. Send requests to http://127.0.0.1:3000
+[2024-03-27 10:15:32] INFO: Press Ctrl-C to exit.
 ```
 
-Tests validate:
-- JSON parsing
-- Event creation
-- Help text generation
+Then in another terminal:
+
+```bash
+$ curl -X POST http://127.0.0.1:3000/cp \
+  -H "Content-Type: application/json" \
+  -d '{"name":"charger_1","use_original":false}'
+
+{"cp_id":0,"message":"Charge point created successfully"}
+```
+
+---
+
+### Example 2: Static Test with Speed
+
+```bash
+$ ocpp-client --client --test data/test_0_1.json --speed 5.0
+
+[2024-03-27 10:15:32] INFO: Static mode: Loading test configuration from data/test_0_1.json
+[2024-03-27 10:15:32] INFO: Test config contains 2 chargers
+[2024-03-27 10:15:32] INFO: Created charger 'charger_1' with ID: 0
+[2024-03-27 10:15:32] INFO: Created charger 'charger_2' with ID: 1
+[2024-03-27 10:15:32] INFO: Test configuration loaded successfully
+[2024-03-27 10:15:32] INFO: Test completed, exiting.
+```
+
+---
+
+### Example 3: Interactive with Events
+
+```bash
+$ ocpp-client --server --client --speed 2.0
+
+[2024-03-27 10:15:32] INFO: OCPP Client starting...
+[2024-03-27 10:15:32] INFO: REST Server started at http://127.0.0.1:3000
+[2024-03-27 10:15:32] INFO: Interactive mode started.
+```
+
+Then make requests:
+
+```bash
+# Create charger
+curl -X POST http://127.0.0.1:3000/cp \
+  -H "Content-Type: application/json" \
+  -d '{"name":"charger_1"}'
+
+# Add plug event to charger 0
+curl -X POST http://127.0.0.1:3000/cp/0/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "plug",
+    "duration": 0,
+    "evse_index": 1,
+    "connector_id": 1,
+    "ev_power": 7.4,
+    "ev_capacity": 60.0,
+    "ev_soc": 20.0,
+    "ev_final_soc": 80.0
+  }'
+
+# Add authorize event
+curl -X POST http://127.0.0.1:3000/cp/0/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "authorize",
+    "duration": 2,
+    "id_tag": "TAG_12345"
+  }'
+```
+
+---
+
+## Configuration Files
+
+### Device Model Files
+
+Located in `data/` directory. Format: `device_model_<name>.json`
+
+Examples:
+- `data/device_model_charger_1.json`
+- `data/device_model.json` (default)
+- `data/device_model_ocpp16.json` (OCPP 1.6 variant)
+
+---
+
+## Troubleshooting
+
+### "test config must contain cps array"
+Your JSON file is missing the `"cps"` array. Add it:
+```json
+{
+  "cps": ["charger_1"],
+  "events": []
+}
+```
+
+### "--test can only be used with --client mode"
+You tried to specify `--test` without `--client`. Use:
+```bash
+ocpp-client --client --test <file>
+```
+
+### Connection refused on http://127.0.0.1:3000
+The REST server isn't running. Make sure you used `--server` flag:
+```bash
+ocpp-client --server
+```
+
+### Events not being processed
+1. Check that `--client` is enabled (if using `--server` alone, no events process from files)
+2. Verify event `duration` - events happen `duration` seconds from NOW
+3. Check logs for any parsing errors in the JSON
+
+---
+
+## See Also
+
+- [REST_API.md](REST_API.md) - Detailed REST API documentation
+- [README.md](README.md) - Project overview
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines
+

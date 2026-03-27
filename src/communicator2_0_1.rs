@@ -1,4 +1,5 @@
 use rust_ocpp::v2_0_1::datatypes::id_token_type::IdTokenType;
+use rust_ocpp::v2_0_1::datatypes::meter_value_type::MeterValueType;
 use rust_ocpp::v2_0_1::datatypes::transaction_type::TransactionType;
 use rust_ocpp::v2_0_1::enumerations::authorization_status_enum_type::AuthorizationStatusEnumType;
 use rust_ocpp::v2_0_1::enumerations::id_token_enum_type::IdTokenEnumType;
@@ -6,9 +7,8 @@ use rust_ocpp::v2_0_1::enumerations::transaction_event_enum_type::TransactionEve
 use rust_ocpp::v2_0_1::enumerations::trigger_reason_enum_type::TriggerReasonEnumType;
 use rust_ocpp::v2_0_1::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v2_0_1::messages::boot_notification::BootNotificationRequest as BootNotificationRequest2_0_1;
-use rust_ocpp::v2_0_1::messages::transaction_event::TransactionEventRequest;
 use rust_ocpp::v2_0_1::messages::meter_values::MeterValuesRequest;
-use rust_ocpp::v2_0_1::datatypes::meter_value_type::MeterValueType;
+use rust_ocpp::v2_0_1::messages::transaction_event::TransactionEventRequest;
 
 use crate::common_client::CommonOcppClientBase;
 use crate::communicator_trait::OCPPCommunicator;
@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, Mutex};
 pub struct OCPPCommunicator2_0_1 {
     pub client: OCPP2_0_1Client,
     pub data: Arc<Mutex<CPData>>,
-    pub trigger_message_requests: Option<mpsc::Sender<String>>,
+    pub trigger_message_requests: Option<mpsc::Sender<(String, u32)>>,
     pub ocpp_deque: OCPPDeque,
 }
 
@@ -172,7 +172,7 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
 
     async fn register_messages(&self) -> () {
         let _ = self.register_trigger_message().await;
-        
+
         // Register GetVariables handler
         let cp_data_arc = Arc::clone(&self.data);
         let callback = move |_request: GetVariablesRequest, _self_clone: OCPP2_0_1Client| {
@@ -180,26 +180,34 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
             async move {
                 debug!("Received GetVariables request");
                 let data = cp_data_arc.lock().await;
-                
+
                 // Log available variables for debugging
                 info!("GetVariables request: responding with available variables");
                 for component in &data.variables.components {
                     for var in &component.variables {
-                        let value = var.value.clone()
+                        let value = var
+                            .value
+                            .clone()
                             .or_else(|| var.default_value.as_ref().map(|v| v.to_string()))
                             .unwrap_or_else(|| "N/A".to_string());
                         trace!("Available: {}.{} = {}", component.name, var.name, value);
                     }
                 }
-                
+
                 // Return response
                 Ok(GetVariablesResponse {
                     ..Default::default()
                 })
             }
         };
-        
+
         self.client.on_get_variables(callback).await;
+    }
+
+    async fn send_heartbeat(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // OCPP 2.0.1 heartbeat routine is not yet implemented, stubbed as no-op.
+        info!("Heartbeat requested on OCPP2.0.1 communicator (stub)");
+        Ok(())
     }
 
     async fn send_start_transaction(
@@ -312,7 +320,7 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
 
         // Get Measurands from device model
         let mut measurands_str = String::new();
-        
+
         for component in &data.variables.components {
             if component.name == "AlignedDataCtrlr" && component.evse.is_none() {
                 for var in &component.variables {
@@ -337,7 +345,7 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
                     } else {
                         0.0
                     }
-                },
+                }
                 "Current.Import" => {
                     // Calculate approximate current assuming 230V per phase
                     if let Some(ev) = &evse.ev {
@@ -345,7 +353,7 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
                     } else {
                         0.0
                     }
-                },
+                }
                 _ => 0.0,
             };
 
@@ -387,6 +395,17 @@ impl OCPPCommunicator for OCPPCommunicator2_0_1 {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // TODO: Implement StatusNotification for OCPP 2.0.1
         // OCPP 2.0.1 uses different status reporting mechanism
+        Ok(())
+    }
+
+    async fn send_data_transfer(
+        &self,
+        _vendor_id: String,
+        _message_id: Option<String>,
+        _data: Option<Value>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // TODO: Implement DataTransfer for OCPP 2.0.1
+        // OCPP 2.0.1 has different data transfer mechanisms
         Ok(())
     }
 }

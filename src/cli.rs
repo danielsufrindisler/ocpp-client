@@ -1,8 +1,7 @@
 use crate::cp_data::{
-    AuthorizationType, ChargeSessionReference, EV, EventTypes, RFID, ScheduledEvents,
+    AuthorizationType, ChargeSessionReference, EventTypes, ScheduledEvents, EV, RFID,
 };
 use serde::{Deserialize, Serialize};
-
 
 /// CLI command for creating a charger/EVSE
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,78 +141,92 @@ If a command fails, the response will include:
 PROTOCOL SUPPORT:
 - OCPP 1.6 (StartTransaction, StopTransaction, MeterValues, etc.)
 - OCPP 2.0.1 (TransactionEvent, MeterValues, GetVariables, etc.)
-"#.to_string()
+"#
+    .to_string()
 }
 
 /// Parse CLI command from JSON string
 pub fn parse_command(json_str: &str) -> Result<CliCommand, String> {
     match serde_json::from_str::<serde_json::Value>(json_str) {
-        Ok(json) => {
-            match json.get("command").and_then(|c| c.as_str()) {
-                Some("CREATE_CHARGER") => {
-                    let evse_id = json
-                        .get("evse_id")
+        Ok(json) => match json.get("command").and_then(|c| c.as_str()) {
+            Some("CREATE_CHARGER") => {
+                let evse_id = json
+                    .get("evse_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing or invalid evse_id")? as u32;
+                let connector_id =
+                    json.get("connector_id")
                         .and_then(|v| v.as_u64())
-                        .ok_or("Missing or invalid evse_id")?
-                        as u32;
-                    let connector_id = json
-                        .get("connector_id")
-                        .and_then(|v| v.as_u64())
-                        .ok_or("Missing or invalid connector_id")?
-                        as u32;
-                    let is_ac = json
-                        .get("is_ac")
-                        .and_then(|v| v.as_bool())
-                        .ok_or("Missing or invalid is_ac")?;
+                        .ok_or("Missing or invalid connector_id")? as u32;
+                let is_ac = json
+                    .get("is_ac")
+                    .and_then(|v| v.as_bool())
+                    .ok_or("Missing or invalid is_ac")?;
 
-                    Ok(CliCommand::CreateCharger {
-                        evse_id,
-                        connector_id,
-                        is_ac,
-                    })
-                }
-                Some("CREATE_EVENT") => {
-                    let event_type = json
-                        .get("event_type")
-                        .and_then(|v| v.as_str())
-                        .ok_or("Missing or invalid event_type")?
-                        .to_string();
-                    let duration = json
-                        .get("duration")
-                        .and_then(|v| v.as_u64())
-                        .ok_or("Missing or invalid duration")?
-                        as u32;
-                    let evse_index = json.get("evse_index").and_then(|v| v.as_u64()).map(|v| v as u32);
-                    let connector_id = json.get("connector_id").and_then(|v| v.as_u64()).map(|v| v as u32);
-                    let id_tag = json.get("id_tag").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let ev_power = json.get("ev_power").and_then(|v| v.as_f64()).map(|v| v as f32);
-                    let ev_capacity = json.get("ev_capacity").and_then(|v| v.as_f64()).map(|v| v as f32);
-                    let ev_soc = json.get("ev_soc").and_then(|v| v.as_f64()).map(|v| v as f32);
-                    let ev_final_soc = json
-                        .get("ev_final_soc")
-                        .and_then(|v| v.as_f64())
-                        .map(|v| v as f32);
-
-                    Ok(CliCommand::CreateEvent {
-                        event_type,
-                        duration,
-                        evse_index,
-                        connector_id,
-                        id_tag,
-                        ev_power,
-                        ev_capacity,
-                        ev_soc,
-                        ev_final_soc,
-                    })
-                }
-                Some("LIST_CHARGERS") => Ok(CliCommand::ListChargers),
-                Some("LIST_EVENTS") => Ok(CliCommand::ListEvents),
-                Some("GET_STATUS") => Ok(CliCommand::GetStatus),
-                Some("HELP") => Ok(CliCommand::Help),
-                Some(cmd) => Err(format!("Unknown command: {}", cmd)),
-                None => Err("Missing 'command' field".to_string()),
+                Ok(CliCommand::CreateCharger {
+                    evse_id,
+                    connector_id,
+                    is_ac,
+                })
             }
-        }
+            Some("CREATE_EVENT") => {
+                let event_type = json
+                    .get("event_type")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing or invalid event_type")?
+                    .to_string();
+                let duration = json
+                    .get("duration")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing or invalid duration")? as u32;
+                let evse_index = json
+                    .get("evse_index")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+                let connector_id = json
+                    .get("connector_id")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+                let id_tag = json
+                    .get("id_tag")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let ev_power = json
+                    .get("ev_power")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32);
+                let ev_capacity = json
+                    .get("ev_capacity")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32);
+                let ev_soc = json
+                    .get("ev_soc")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32);
+                let ev_final_soc = json
+                    .get("ev_final_soc")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32);
+
+                Ok(CliCommand::CreateEvent {
+                    event_type,
+                    duration,
+                    evse_index,
+                    connector_id,
+                    id_tag,
+                    ev_power,
+                    ev_capacity,
+                    ev_soc,
+                    ev_final_soc,
+                })
+            }
+            Some("LIST_CHARGERS") => Ok(CliCommand::ListChargers),
+            Some("LIST_EVENTS") => Ok(CliCommand::ListEvents),
+            Some("GET_STATUS") => Ok(CliCommand::GetStatus),
+            Some("HELP") => Ok(CliCommand::Help),
+            Some(cmd) => Err(format!("Unknown command: {}", cmd)),
+            None => Err("Missing 'command' field".to_string()),
+        },
         Err(e) => Err(format!("Invalid JSON: {}", e)),
     }
 }
@@ -361,7 +374,8 @@ mod tests {
 
     #[test]
     fn test_parse_create_charger() {
-        let json = r#"{"command": "CREATE_CHARGER", "evse_id": 1, "connector_id": 1, "is_ac": true}"#;
+        let json =
+            r#"{"command": "CREATE_CHARGER", "evse_id": 1, "connector_id": 1, "is_ac": true}"#;
         let cmd = parse_command(json).unwrap();
         match cmd {
             CliCommand::CreateCharger {
@@ -382,7 +396,11 @@ mod tests {
         let json = r#"{"command": "CREATE_EVENT", "event_type": "authorize", "duration": 2, "id_tag": "TAG123"}"#;
         let cmd = parse_command(json).unwrap();
         match cmd {
-            CliCommand::CreateEvent { event_type, duration, .. } => {
+            CliCommand::CreateEvent {
+                event_type,
+                duration,
+                ..
+            } => {
                 assert_eq!(event_type, "authorize");
                 assert_eq!(duration, 2);
             }

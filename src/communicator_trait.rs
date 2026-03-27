@@ -28,10 +28,19 @@ pub trait OCPPCommunicator: Send + Sync {
         reference: ChargeSessionReference,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+    async fn send_heartbeat(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     async fn send_status_notification(
         &self,
         connector_id: u32,
         status: String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn send_data_transfer(
+        &self,
+        vendor_id: String,
+        message_id: Option<String>,
+        data: Option<serde_json::Value>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     fn get_base(&mut self) -> &mut CommonOcppClientBase;

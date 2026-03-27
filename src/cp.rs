@@ -1,22 +1,27 @@
 use crate::communicator1_6::OCPPCommunicator1_6;
 use crate::communicator2_0_1::OCPPCommunicator2_0_1;
 use crate::communicator_trait::OCPPCommunicator;
-use crate::cp_data::{CPData, ChargeSessionReference, EventTypes, GetVariableData, MessageReference, EV, EVSE,};
+use crate::cp_data::{
+    CPData, ChargeSessionReference, EventInjectionMessage, EventTypes, GetVariableData,
+    MessageReference, ScheduledEventWithAbsoluteTime, EV, EVSE,
+};
 use crate::ocpp_1_6::OCPP1_6Client;
 use crate::ocpp_2_0_1::OCPP2_0_1Client;
 use crate::ocpp_deque::OCPPDeque;
 use crate::Client::{OCPP1_6, OCPP2_0_1};
+use core::panic;
 use log::{debug, info, trace};
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::fs;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
 
 pub struct CP {
     pub communicator: Arc<Mutex<Option<Box<dyn OCPPCommunicator>>>>,
     pub data: Arc<Mutex<CPData>>,
     pub client: Option<crate::Client>,
+    pub event_rx: Option<mpsc::Receiver<EventInjectionMessage>>,
 }
 
 impl CP {
@@ -33,7 +38,9 @@ impl CP {
                 let mut meter_energy = 0.0;
                 // Try to find MeterEnergy default value from AlignedDataCtrlr
                 for aligned_component in &data.variables.components {
-                    if aligned_component.name == "AlignedDataCtrlr" && aligned_component.evse.is_none() {
+                    if aligned_component.name == "AlignedDataCtrlr"
+                        && aligned_component.evse.is_none()
+                    {
                         for var in &aligned_component.variables {
                             if var.name == "MeterEnergy" {
                                 if let Some(ref default_val) = var.default_value {
@@ -54,6 +61,13 @@ impl CP {
                     charging_task: None,
                     meter_energy,
                     status: "Available".to_string(),
+                    current_tariff: None,
+                    idle_tariff: None,
+                    running_cost: 0.0,
+                    last_cost_update: None,
+                    triggers: None,
+                    next_period: None,
+                    pricing_state: None,
                 };
                 evses.insert(component.evse.unwrap(), evse);
             }
@@ -91,7 +105,7 @@ impl CP {
         let options_username = data.username.clone();
         let options_password = data.password.clone();
         let data_clone = self.data.clone();
-        let (trigger_message_requests, rx) = mpsc::channel::<String>(100);
+        let (trigger_message_requests, rx) = mpsc::channel::<(String, u32)>(100);
         info!("running");
 
         drop(data);
@@ -108,7 +122,7 @@ impl CP {
                 let _base_clone = client.base.clone();
                 *self.communicator.lock().await = Some(Box::new(OCPPCommunicator1_6 {
                     client: client.clone(),
-                    data: data_clone,
+                    data: data_clone.clone(),
                     trigger_message_requests: Some(trigger_message_requests),
                     ocpp_deque: OCPPDeque::new(client.base.clone()),
                 })
@@ -125,7 +139,7 @@ impl CP {
                 let _base_clone = client.base.clone();
                 *self.communicator.lock().await = Some(Box::new(OCPPCommunicator2_0_1 {
                     client: client.clone(),
-                    data: data_clone,
+                    data: data_clone.clone(),
                     trigger_message_requests: Some(trigger_message_requests),
                     ocpp_deque: OCPPDeque::new(client.base.clone()),
                 })
@@ -136,6 +150,7 @@ impl CP {
                 return Err("Unsupported protocol".into());
             }
         }
+        let cp_data = data_clone;
         info!("running");
 
         let comm_mpsc = self.communicator.clone();
@@ -148,16 +163,51 @@ impl CP {
             .register_messages()
             .await;
 
-        info!("Communicator registered messages, starting background task to listen for triggers");
+        info!("Communicator registered messages, starting heartbeat and trigger listeners");
+
+        let heartbeat_data = self.data.clone();
+        let heartbeat_comm = self.communicator.clone();
+        tokio::spawn(async move {
+            loop {
+                let interval_secs = {
+                    let data = heartbeat_data.lock().await;
+                    CP::get_heartbeat_interval(&*data)
+                };
+                if interval_secs == 0 {
+                    // Heartbeat disabled, sleep for a default interval before checking again
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    continue;
+                }
+                tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+
+                if let Some(comm_lock) = heartbeat_comm.lock().await.as_ref() {
+                    if let Err(e) = comm_lock.send_heartbeat().await {
+                        log::warn!("Heartbeat send failed: {:?}", e);
+                    }
+                }
+            }
+        });
+
         tokio::spawn(async move {
             let mut rx = rx;
             while let Some(msg) = rx.recv().await {
-                if msg == "boot_notification" {
-                    debug!("Received boot_notification trigger from mpsc");
-                    if let Some(comm) = comm_mpsc.lock().await.as_ref() {
-                        let _ = comm.send_boot_notification().await;
+                let _ = match msg {
+                    (ref msg_type, _) if msg_type == "boot_notification" => {
+                        debug!("Received boot_notification trigger from mpsc");
+                        if let Some(comm) = comm_mpsc.lock().await.as_ref() {
+                            let _ = comm.send_boot_notification().await;
+                        }
                     }
-                }
+                    (ref msg_type, evse_index) if msg_type == "remote_start_transaction" => {
+                        debug!(
+                            "Received remote_start_transaction trigger for evse {} from mpsc",
+                            evse_index
+                        );
+                        CP::check_start_charging(cp_data.clone(), evse_index, comm_mpsc.clone())
+                            .await;
+                    }
+                    _ => debug!("Received unknown trigger {} from mpsc", msg.0),
+                };
             }
         });
         info!("running 5");
@@ -188,11 +238,9 @@ impl CP {
         Ok(())
     }
 
-    pub fn read_variables_from_file() -> GetVariableData {
-        let path = "./data/device_model.json";
+    pub fn read_variables_from_file(path: &str) -> GetVariableData {
         let data = fs::read_to_string(path).expect("Unable to read file");
         let mut res: GetVariableData = serde_json::from_str(&data).expect("Unable to parse");
-        //info!("{:?}", &res);
 
         for component in &mut res.components {
             let mut component_string = component.name.clone();
@@ -202,7 +250,6 @@ impl CP {
             if let Some(instance) = &component.instance {
                 component_string.push_str(instance.as_str());
             }
-            //                        + if component.connector.is_some() { component.connector.unwrap().to_string().as_str() } else { "" };
 
             for variable in &mut component.variables {
                 if variable.ocpp16_key.is_none() {
@@ -212,6 +259,176 @@ impl CP {
         }
 
         res
+    }
+
+    pub fn read_cp_config_file(
+        path: &str,
+    ) -> Result<crate::cp_data::CPConfigFile, Box<dyn std::error::Error + Send + Sync>> {
+        let content = fs::read_to_string(path)?;
+
+        // allow old format (direct GetVariableData) and new format with cp/events/components
+        if let Ok(config) = serde_json::from_str::<crate::cp_data::CPConfigFile>(&content) {
+            return Ok(config);
+        }
+
+        let legacy = serde_json::from_str::<GetVariableData>(&content)?;
+        Ok(crate::cp_data::CPConfigFile {
+            cp: None,
+            events: vec![],
+            components: legacy.components,
+        })
+    }
+
+    pub fn save_cp_config_file(
+        path: &str,
+        config: &crate::cp_data::CPConfigFile,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let json = serde_json::to_string_pretty(config)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn filter_components_with_ocpp16_key(mut data: GetVariableData) -> GetVariableData {
+        data.components = data
+            .components
+            .into_iter()
+            .filter_map(|mut component| {
+                // Always keep EVSE and Connector components as they are needed for charger configuration
+                if component.name == "EVSE" || component.name == "Connector" {
+                    component.variables.retain(|v| v.ocpp16_key.is_some());
+                    return Some(component);
+                }
+                // For other components, only keep if they have variables with ocpp16_key
+                component.variables.retain(|v| v.ocpp16_key.is_some());
+                if component.variables.is_empty() {
+                    None
+                } else {
+                    Some(component)
+                }
+            })
+            .collect();
+        data
+    }
+
+    pub fn save_variables_to_file(
+        path: &str,
+        data: &GetVariableData,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let json = serde_json::to_string_pretty(data)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn prepare_cp_variables_files(
+        cp_file_name: &str,
+        use_original: bool,
+    ) -> Result<
+        (crate::cp_data::CPConfigFile, GetVariableData),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let base_path = "./data/device_model.json";
+        let orig_path = format!("./data/{}.orig.json", cp_file_name);
+        let active_path = format!("./data/{}.json", cp_file_name);
+
+        if !std::path::Path::new(&orig_path).exists() {
+            // base file might be full component format
+            panic!(
+                "Original file {} does not exist. Please create it based on the base device model.",
+                orig_path
+            );
+        }
+
+        if use_original || !std::path::Path::new(&active_path).exists() {
+            info!(
+                "Copying original file {} to active file {}",
+                orig_path, active_path
+            );
+            fs::copy(&orig_path, &active_path)?;
+        }
+
+        let mut config = CP::read_cp_config_file(&active_path)?;
+
+        let mut vars: GetVariableData = GetVariableData {
+            components: config.components.clone(),
+        };
+
+        for component in &mut vars.components {
+            let mut component_string = component.name.clone();
+            if let Some(evse) = component.evse {
+                component_string.push_str(evse.to_string().as_str());
+            }
+            if let Some(instance) = &component.instance {
+                component_string.push_str(instance.as_str());
+            }
+            for variable in &mut component.variables {
+                if variable.ocpp16_key.is_none() {
+                    variable.ocpp16_key = Some(component_string.clone() + variable.name.as_str());
+                }
+            }
+        }
+
+        let filtered = CP::filter_components_with_ocpp16_key(vars);
+        config.components = filtered.components.clone();
+        CP::save_cp_config_file(&active_path, &config)?;
+
+        Ok((config, filtered))
+    }
+
+    pub fn get_heartbeat_interval(cp_data: &CPData) -> u64 {
+        let candidates = [
+            "HeartBeatInterval",
+            "HeartbeatInterval",
+            "OCPPCommCtrlrHeartbeatInterval",
+            "OCPPCommCtrlrHeartbeatInterval", // honour with/without component prefix
+        ];
+        for key in candidates {
+            if let Some(value) = CP::get_variable_value(cp_data, key) {
+                if let Ok(v) = value.parse::<u64>() {
+                    return v.max(1);
+                }
+            }
+        }
+        30
+    }
+
+    pub fn set_variable_value(cp_data: &mut CPData, ocpp16_key: &str, new_value: &str) -> bool {
+        let mut updated = false;
+        for component in &mut cp_data.variables.components {
+            info!(
+                "Checking component {} for variable with ocpp16_key {}",
+                component.name, ocpp16_key
+            );
+            for variable in &mut component.variables {
+                info!(
+                    "Checking variable {} for variable with ocpp16_key {}",
+                    variable.name, ocpp16_key
+                );
+
+                if let Some(ref key) = variable.ocpp16_key {
+                    info!(
+                        "Checking ocpp16_key {} for variable with ocpp16_key {}",
+                        key, ocpp16_key
+                    );
+                    if key == ocpp16_key {
+                        variable.default_value =
+                            Some(crate::cp_data::ValueType::String(new_value.to_string()));
+                        updated = true;
+                        break;
+                    }
+                }
+            }
+            if updated {
+                break;
+            }
+        }
+        updated
+    }
+
+    pub fn persist_variables_to_file(
+        cp_data: &CPData,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let active_path = format!("./data/{}.json", cp_data.variables_file_name);
+        CP::save_variables_to_file(&active_path, &cp_data.variables)
     }
 
     pub fn list_components(data: GetVariableData) {
@@ -229,174 +446,249 @@ impl CP {
         }
     }
 
-    async fn spawn_evse_tasks(&self) {
+    async fn spawn_evse_tasks(&mut self) {
+        let event_rx = self.event_rx.take();
+        self.spawn_evse_tasks_with_channel(event_rx, 1.0).await;
+    }
+
+    /// Spawn EVSE event processing task with optional event injection channel and simulation speed
+    pub async fn spawn_evse_tasks_with_channel(
+        &self,
+        event_rx: Option<mpsc::Receiver<EventInjectionMessage>>,
+        speed_multiplier: f64,
+    ) {
         trace!("Spawning EVSE task with data");
 
-        let _evse_count = self.data.lock().await.evses.len();
-        let cp_data_clone = self.data.clone();
+        let cp_data = self.data.clone();
         let comm_arc = self.communicator.clone();
 
-        let cp_data = cp_data_clone.clone();
-        let comm = comm_arc.clone();
         tokio::spawn(async move {
-            let mut t = 0;
-            let comm_arc2 = comm.clone();
-            let mut finished_count = 0;
+            // Convert initial events to priority queue with absolute times
+            let mut event_queue: BinaryHeap<ScheduledEventWithAbsoluteTime> = {
+                let cp_guard = cp_data.lock().await;
+                let now = Instant::now();
+                cp_guard
+                    .events
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, event)| {
+                        let scheduled_time =
+                            now + Duration::from_secs_f64(event.duration as f64 / speed_multiplier);
+                        ScheduledEventWithAbsoluteTime {
+                            scheduled_time,
+                            event: event.event.clone(),
+                            event_index: idx,
+                        }
+                    })
+                    .collect()
+            };
+
+            let mut event_rx = event_rx;
+            let mut next_event_index = cp_data.lock().await.events.len();
+
             loop {
-                let events = cp_data.lock().await.events.clone();
+                let now = Instant::now();
 
-                if finished_count >= events.len() {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    continue;
-                }
+                // Get next event from queue
+                let next_event = event_queue.peek();
+                let sleep_duration = next_event.map(|e| {
+                    let duration = e.scheduled_time.saturating_duration_since(now);
+                    // Apply speed multiplier: faster simulation = shorter sleep
+                    Duration::from_secs_f64(duration.as_secs_f64() * speed_multiplier)
+                });
 
-                for (idx, event) in events[finished_count..].iter().enumerate() {
-                    let i = finished_count + idx;
-                    let event_clone = event.clone();
-                    tokio::time::sleep(tokio::time::Duration::from_secs(
-                        event_clone.duration as u64,
-                    ))
-                    .await;
-
-                    t += event_clone.duration;
-                    info!("Event {} ocurring at time {} {:?}", i, t, event_clone.event);
-
-                    // Clone event data needed for spawned tasks to avoid lifetime issues
-                    let event_data = event_clone.event.clone();
-                    match event_data {
-                        EventTypes::Authorize(auth_type) => {
-                            // Try to lock with retry logic
-                            loop {
-                                match comm_arc2.try_lock() {
-                                    Ok(guard) => {
-                                        if let Some(comm) = guard.as_ref() {
-                                            let _ = comm
-                                                .send_authorize(
-                                                    auth_type.clone(),
-                                                    MessageReference::EventIndex(i),
-                                                )
-                                                .await;
-                                        }
-                                        break;
-                                    }
-                                    Err(_) => {
-                                        // Lock not available, sleep and retry
-                                        tokio::time::sleep(Duration::from_millis(10)).await;
-                                    }
+                // Use tokio::select! to wait for either:
+                // 1. Timer until next event
+                // 2. New event from channel
+                tokio::select! {
+                    _ = async {
+                        match sleep_duration {
+                            Some(d) if d.as_millis() > 0 => tokio::time::sleep(d).await,
+                            _ => tokio::time::sleep(Duration::from_millis(100)).await,
+                        }
+                    } => {
+                        // Timer fired - process next event if it's time
+                        if let Some(evt) = event_queue.peek() {
+                            if evt.scheduled_time <= Instant::now() {
+                                if let Some(scheduled_evt) = event_queue.pop() {
+                                    Self::process_event(
+                                        &cp_data,
+                                        &comm_arc,
+                                        scheduled_evt.event,
+                                        scheduled_evt.event_index,
+                                    ).await;
                                 }
                             }
                         }
-                        EventTypes::LocalStop => {
-                            // todo, if charging, stop charging and transition to finishing
+                    }
+                    msg = async {
+                        if let Some(ref mut rx) = event_rx {
+                            rx.recv().await
+                        } else {
+                            std::future::pending().await
                         }
-                        EventTypes::Plug(reference, ev) => {
-                            let mut cp_data_guard = cp_data.lock().await;
-                            let is_authorized = cp_data_guard.authorization.is_some();
-                            if let Some(evse) = cp_data_guard.evses.get_mut(&reference.evse_index) {
-                                evse.plugged_in = Some(reference.connector_id);
-                                evse.ev = Some(ev.clone());
-                                // Set status to Preparing if authorized, otherwise Available
-                                if is_authorized {
-                                    evse.status = "Preparing".to_string();
-                                } else {
-                                    evse.status = "Available".to_string();
-                                }
+                    } => {
+                        match msg {
+                            Some(EventInjectionMessage::InsertEvent { event, duration_secs }) => {
+                                let scheduled_time = Instant::now() + Duration::from_secs_f64(duration_secs as f64 / speed_multiplier);
+                                event_queue.push(ScheduledEventWithAbsoluteTime {
+                                    scheduled_time,
+                                    event,
+                                    event_index: next_event_index,
+                                });
+                                next_event_index += 1;
+                                info!("Injected new event, queue size: {}", event_queue.len());
                             }
-                            drop(cp_data_guard);
-                            
-                            // Send StatusNotification
-                            if let Some(comm_inner) = comm.lock().await.as_ref() {
-                                let status = if is_authorized { "Preparing" } else { "Available" };
-                                let _ = comm_inner.send_status_notification(1, status.to_string()).await;
+                            Some(EventInjectionMessage::Stop) => {
+                                info!("Event loop stopped via channel");
+                                break;
                             }
-                            
-                            CP::check_start_charging(
-                                cp_data.clone(),
-                                reference.evse_index,
-                                comm.clone(),
-                            )
-                            .await
-                        }
-                        EventTypes::Unplug(reference) => {
-                            info!("Handling unplug event for evse {}", reference.evse_index);
-                            CP::check_stop_charging(
-                                cp_data.clone(),
-                                reference.evse_index,
-                                comm.clone(),
-                            )
-                            .await;
-                            let mut cp_data_guard = cp_data.lock().await;
-                            if let Some(evse) = cp_data_guard.evses.get_mut(&reference.evse_index) {
-                                info!("Handling unplug event for evse {}", reference.evse_index);
-
-                                evse.plugged_in = None;
-                                evse.ev = None;
-                                evse.status = "Available".to_string();
-                            }
-                            drop(cp_data_guard);
-                            
-                            // Send StatusNotification
-                            if let Some(comm_inner) = comm.lock().await.as_ref() {
-                                let _ = comm_inner.send_status_notification(1, "Available".to_string()).await;
-                            }
-                        }
-                        EventTypes::RemoteStart(_reference) => {
-                            // Spawn a charging task that updates SOC every second
-                            let _cp_data_clone = cp_data.clone();
-                        }
-                        EventTypes::RemoteStop(_reference) => {
-                            // todo: handle remote stop
-                        }
-                        EventTypes::CommunicationStart => {
-                            info!("Simulated communication restart");
-                            loop {
-                                match comm_arc2.try_lock() {
-                                    Ok(mut guard) => {
-                                        if let Some(comm) = guard.as_mut() {
-                                            comm.get_base().establish_connection();
-                                            info!("Simulated communication restart");
-                                        }
-                                        break;
-                                    }
-                                    Err(_) => {
-                                        // Lock not available, sleep and retry
-                                        tokio::time::sleep(Duration::from_millis(10)).await;
-                                    }
-                                }
-                                // Simulate communication loss by dropping communicator reference
-                            }
-                        }
-
-                        EventTypes::CommunicationStop => {
-                            loop {
-                                match comm_arc2.try_lock() {
-                                    Ok(mut guard) => {
-                                        if let Some(comm) = guard.as_mut() {
-                                            let handle = comm.get_base().handle.clone();
-                                            if let Some(task_handle) = handle.lock().await.take() {
-                                                task_handle.abort();
-                                                comm.get_base().sink.lock().await.take();
-                                                comm.get_base().stream.lock().await.take();
-
-                                                info!("Simulated communication loss: connection ");
-                                            };
-                                        }
-                                        break;
-                                    }
-                                    Err(_) => {
-                                        // Lock not available, sleep and retry
-                                        tokio::time::sleep(Duration::from_millis(10)).await;
-                                    }
-                                }
-                                // Simulate communication loss by dropping communicator reference
+                            None => {
+                                // Channel closed, continue processing existing events
+                                event_rx = None;
                             }
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                finished_count = events.len();
             }
         });
+    }
+
+    /// Process a single event
+    async fn process_event(
+        cp_data: &Arc<Mutex<CPData>>,
+        comm_arc: &Arc<Mutex<Option<Box<dyn OCPPCommunicator>>>>,
+        event_data: EventTypes,
+        event_index: usize,
+    ) {
+        let comm_arc2 = comm_arc.clone();
+        match event_data {
+            EventTypes::Authorize(auth_type) => {
+                // Try to lock with retry logic
+                loop {
+                    match comm_arc2.try_lock() {
+                        Ok(guard) => {
+                            if let Some(comm) = guard.as_ref() {
+                                let _ = comm
+                                    .send_authorize(
+                                        auth_type.clone(),
+                                        MessageReference::EventIndex(event_index),
+                                    )
+                                    .await;
+                            }
+                            break;
+                        }
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }
+                }
+                // Log current price
+                let cp_data_guard = cp_data.lock().await;
+                let price_info = CP::get_variable_value(&*cp_data_guard, "DefaultPrice")
+                    .unwrap_or("Unknown".to_string());
+                info!("Authorize event: current price {}", price_info);
+            }
+            EventTypes::LocalStop => {
+                // todo, if charging, stop charging and transition to finishing
+            }
+            EventTypes::Plug(reference, ev) => {
+                let mut cp_data_guard = cp_data.lock().await;
+                let _is_authorized = cp_data_guard.authorization.is_some();
+                if let Some(evse) = cp_data_guard.evses.get_mut(&reference.evse_index) {
+                    evse.plugged_in = Some(reference.connector_id);
+                    evse.ev = Some(ev.clone());
+                }
+                drop(cp_data_guard);
+
+                // Send StatusNotification
+                if let Some(comm_inner) = comm_arc.lock().await.as_ref() {
+                    let _ = comm_inner
+                        .send_status_notification(1, "Preparing".to_string())
+                        .await;
+                }
+
+                CP::check_start_charging(cp_data.clone(), reference.evse_index, comm_arc.clone())
+                    .await
+            }
+            EventTypes::Unplug(reference) => {
+                info!("Handling unplug event for evse {}", reference.evse_index);
+                CP::check_stop_charging(cp_data.clone(), reference.evse_index, comm_arc.clone())
+                    .await;
+                // Send ConnectorUnplugged DataTransfer
+                if let Some(comm) = comm_arc.lock().await.as_ref() {
+                    let data = serde_json::json!({
+                        "transactionId": reference.evse_index,
+                        "timestamp": chrono::Utc::now().to_rfc3339()
+                    });
+                    let _ = comm
+                        .send_data_transfer(
+                            "org.openchargealliance.costmsg".to_string(),
+                            Some("ConnectorUnplugged".to_string()),
+                            Some(data),
+                        )
+                        .await;
+                }
+                let mut cp_data_guard = cp_data.lock().await;
+                if let Some(evse) = cp_data_guard.evses.get_mut(&reference.evse_index) {
+                    info!("Handling unplug event for evse {}", reference.evse_index);
+                    evse.plugged_in = None;
+                    evse.ev = None;
+                    evse.status = "Available".to_string();
+                }
+                drop(cp_data_guard);
+
+                // Send StatusNotification
+                if let Some(comm_inner) = comm_arc.lock().await.as_ref() {
+                    let _ = comm_inner
+                        .send_status_notification(1, "Available".to_string())
+                        .await;
+                }
+            }
+            EventTypes::RemoteStart(_reference) => {
+                // Spawn a charging task that updates SOC every second
+                let _cp_data_clone = cp_data.clone();
+            }
+            EventTypes::RemoteStop(_reference) => {
+                // todo: handle remote stop
+            }
+            EventTypes::CommunicationStart => {
+                info!("Simulated communication restart");
+                loop {
+                    match comm_arc2.try_lock() {
+                        Ok(mut guard) => {
+                            if let Some(comm) = guard.as_mut() {
+                                comm.get_base().establish_connection();
+                                info!("Simulated communication restart");
+                            }
+                            break;
+                        }
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }
+                }
+            }
+            EventTypes::CommunicationStop => loop {
+                match comm_arc2.try_lock() {
+                    Ok(mut guard) => {
+                        if let Some(comm) = guard.as_mut() {
+                            let handle = comm.get_base().handle.clone();
+                            if let Some(task_handle) = handle.lock().await.take() {
+                                task_handle.abort();
+                                comm.get_base().sink.lock().await.take();
+                                comm.get_base().stream.lock().await.take();
+                                info!("Simulated communication loss: connection aborted");
+                            };
+                        }
+                        break;
+                    }
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+            },
+        }
     }
 
     #[allow(dead_code)]
@@ -418,14 +710,15 @@ impl CP {
                 .charging_task
                 .is_some()
             {
-                data.evses
+                if let Some(task) = data
+                    .evses
                     .get_mut(&evse_index)
                     .unwrap()
                     .charging_task
-                    .clone()
-                    .unwrap()
-                    .abort();
-                data.evses.get_mut(&evse_index).unwrap().charging_task = None.into();
+                    .take()
+                {
+                    task.abort();
+                }
             }
             drop(data);
             if let Some(_comm) = communicator.lock().await.as_ref() {
@@ -461,65 +754,19 @@ impl CP {
                 };
                 info!("Starting charging for evse {}", evse_index);
                 let _ = comm.send_start_transaction(reference.clone()).await;
+                let _ = comm
+                    .send_status_notification(1, "Charging".to_string())
+                    .await;
                 let cp_data_clone = cp_data.clone();
                 let communicator_clone = communicator.clone();
-                let charging_task = tokio::spawn(async move {
-                    let mut last_meter_send = std::time::Instant::now();
-                    let data = cp_data_clone.lock().await;
-                    let interval_secs = if let Some(interval_str) = CP::get_variable_value(&data, "MeterValueSampleInterval") {
-                        interval_str.parse().unwrap_or(30)
-                    } else {
-                        300
-                    };  
-                    drop(data);
-                    
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-
-                        let mut cp_data_guard = cp_data_clone.lock().await;
-                        if let Some(evse) = cp_data_guard.evses.get_mut(&reference.evse_index) {
-                            if let Some(ev) = &mut evse.ev {
-                                // Lookup power based on SOC using interpolation
-                                let power = CP::lookup_power_from_soc(ev);
-                                ev.power = power;
-
-                                // Update SOC: add power / capacity * 1s / 3600
-                                let soc_increment = (power / ev.capacity) * (1.0 / 3600.0) * 100.0; // convert to percentage
-                                ev.soc += soc_increment;
-
-                                // Increment meter energy: power in kW, time interval in seconds
-                                // Convert power from kW to Wh: kW * 1s / 3600s = kWh = Wh / 1000
-                                evse.meter_energy += (power * 1000.0) * (1.0 / 3600.0); // power in Wh
-
-                                info!("SOC: {:.3}% Power: {:.2}kW Meter: {:.2}Wh", ev.soc, power, evse.meter_energy);
-                                drop(cp_data_guard);
-                                
-                                // Check if it's time to send meter values
-                                if last_meter_send.elapsed().as_secs() >= interval_secs {
-                                    info!("Sending meter values for evse {}", reference.evse_index);
-                                    if let Some(comm) = communicator_clone.lock().await.as_ref() {
-                                                                            info!("Sending meter values for evse {}", reference.evse_index);
-                                        let _ = comm.send_meter_values(reference.clone()).await;
-                                    }
-                                    last_meter_send = std::time::Instant::now();
-                                }
-                            } else {
-                                info!(
-                                    "EV data missing for evse {}, stopping charging task",
-                                    reference.evse_index
-                                );
-                                break;
-                            }
-                        }
-                    }
-                });
+                let charging_task =
+                    charging_loop(cp_data_clone, reference.clone(), communicator_clone);
 
                 let mut data = cp_data.lock().await;
                 data.authorization = None; // Clear authorization after starting charging, for testing purposes
                 data.evses.get_mut(&evse_index).unwrap().started = true;
 
-                data.evses.get_mut(&evse_index).unwrap().charging_task =
-                    Some(charging_task.abort_handle());
+                data.evses.get_mut(&evse_index).unwrap().charging_task = Some(charging_task);
             }
         } else {
             debug!(
@@ -580,6 +827,112 @@ impl CP {
             ev.power_vs_soc[ev.power_vs_soc.len() - 1].1
         }
     }
+}
 
+fn charging_loop(
+    cp_data: Arc<Mutex<CPData>>,
+    reference: ChargeSessionReference,
+    communicator: Arc<Mutex<Option<Box<dyn OCPPCommunicator>>>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last_meter_send = std::time::Instant::now();
+        let mut previous_power: f64 = 0.0;
+        let data = cp_data.lock().await;
+        let interval_secs =
+            if let Some(interval_str) = CP::get_variable_value(&data, "MeterValueSampleInterval") {
+                interval_str.parse().unwrap_or(30)
+            } else {
+                300
+            };
+        drop(data);
 
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let mut cp_data_guard = cp_data.lock().await;
+            let triggers = cp_data_guard.evses[&reference.evse_index].triggers.clone();
+            if let Some(evse) = cp_data_guard.evses.get_mut(&reference.evse_index) {
+                if let Some(ev) = &mut evse.ev {
+                    // Lookup power based on SOC using interpolation
+                    let power = CP::lookup_power_from_soc(ev);
+                    ev.power = power;
+
+                    // Update SOC: add power / capacity * 1s / 3600
+                    let soc_increment = (power / ev.capacity) * (1.0 / 3600.0) * 100.0; // convert to percentage
+                    ev.soc += soc_increment;
+
+                    // Increment meter energy: power in kW, time interval in seconds
+                    // Convert power from kW to Wh: kW * 1s / 3600s = kWh = Wh / 1000
+                    let energy_increment = (power * 1000.0) * (1.0 / 3600.0); // Wh
+                    evse.meter_energy += energy_increment;
+
+                    // Calculate running cost
+                    if let Some(tariff) = &evse.current_tariff {
+                        if let Some(kwh_price) = tariff.kwh_price {
+                            let cost_increment = (energy_increment as f64 / 1000.0) * kwh_price; // kWh * $/kWh
+                            evse.running_cost += cost_increment;
+                        }
+                    }
+
+                    let current_price = evse
+                        .current_tariff
+                        .as_ref()
+                        .and_then(|t| t.kwh_price)
+                        .unwrap_or(0.0);
+                    info!("SOC: {:.3}% Power: {:.2}kW Meter: {:.2}Wh Current Price: {:.3}$/kWh Running Cost: {:.2}$", 
+                          ev.soc, power, evse.meter_energy, current_price, evse.running_cost);
+
+                    // Check triggers for extra meter send
+                    let mut send_extra_meter = false;
+                    if let Some(triggers) = &triggers {
+                        // atPowerkW
+                        if let Some(threshold) = triggers.at_power_kw {
+                            let power_f64 = power as f64;
+                            if (previous_power <= threshold && power_f64 > threshold)
+                                || (previous_power > threshold && power_f64 <= threshold)
+                            {
+                                send_extra_meter = true;
+                            }
+                        }
+                        // atEnergykWh
+                        if let Some(threshold) = triggers.at_energy_kwh {
+                            if (evse.meter_energy as f64 / 1000.0) >= threshold {
+                                send_extra_meter = true;
+                            }
+                        }
+                        // atTime
+                        if let Some(at_time) = &triggers.at_time {
+                            if chrono::Utc::now().timestamp()
+                                >= chrono::DateTime::parse_from_rfc3339(at_time)
+                                    .unwrap()
+                                    .timestamp()
+                            {
+                                send_extra_meter = true;
+                            }
+                        }
+                    }
+                    previous_power = power as f64;
+
+                    // Check if it's time to send meter values
+                    if last_meter_send.elapsed().as_secs() >= interval_secs || send_extra_meter {
+                        info!("Sending meter values for evse {}", reference.evse_index);
+                        drop(cp_data_guard);
+                        if let Some(comm) = communicator.lock().await.as_ref() {
+                            let _ = comm.send_meter_values(reference.clone()).await;
+                        }
+                        last_meter_send = std::time::Instant::now();
+                    } else {
+                        drop(cp_data_guard);
+                    }
+                } else {
+                    drop(cp_data_guard);
+                    info!(
+                        "EV data missing for evse {}, stopping charging task",
+                        reference.evse_index
+                    );
+                    break;
+                }
+            }
+        }
+    })
 }

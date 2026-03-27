@@ -1,16 +1,30 @@
 use rust_ocpp::v1_6::messages::authorize::{AuthorizeRequest, AuthorizeResponse};
 use rust_ocpp::v1_6::messages::boot_notification::BootNotificationRequest;
-use rust_ocpp::v1_6::types::KeyValue;
-use rust_ocpp::v1_6::types::{SampledValue, Measurand };
+use rust_ocpp::v1_6::messages::change_configuration::{
+    ChangeConfigurationRequest, ChangeConfigurationResponse,
+};
+use rust_ocpp::v1_6::messages::data_transfer::{DataTransferRequest, DataTransferResponse};
+use rust_ocpp::v1_6::messages::meter_values::MeterValuesRequest;
+use rust_ocpp::v1_6::messages::remote_start_transaction::{
+    RemoteStartTransactionRequest, RemoteStartTransactionResponse,
+};
+use rust_ocpp::v1_6::messages::remote_stop_transaction::{
+    RemoteStopTransactionRequest, RemoteStopTransactionResponse,
+};
 use rust_ocpp::v1_6::messages::start_transaction::StartTransactionRequest;
 use rust_ocpp::v1_6::messages::stop_transaction::StopTransactionRequest;
+use rust_ocpp::v1_6::types::ConfigurationStatus;
+use rust_ocpp::v1_6::types::KeyValue;
 use rust_ocpp::v1_6::types::Reason;
-use rust_ocpp::v1_6::messages::meter_values::MeterValuesRequest;
+use rust_ocpp::v1_6::types::RemoteStartStopStatus;
+use rust_ocpp::v1_6::types::{Measurand, SampledValue};
 
 use crate::common_client::CommonOcppClientBase;
 use crate::communicator_trait::OCPPCommunicator;
+use crate::cp::CP;
 use crate::cp_data::{
-    AuthorizationType, CPData, ChargeSessionReference, EventTypes, MessageReference,
+    AuthorizationType, CPData, ChargeSessionReference, EventTypes, FinalCostData, MessageReference,
+    RunningCostData, SetUserPriceData,
 };
 use crate::ocpp_1_6::OCPP1_6Client;
 use crate::ocpp_deque::OCPPDeque;
@@ -32,7 +46,7 @@ use uuid::Uuid;
 pub struct OCPPCommunicator1_6 {
     pub client: OCPP1_6Client,
     pub data: Arc<Mutex<CPData>>,
-    pub trigger_message_requests: Option<mpsc::Sender<String>>,
+    pub trigger_message_requests: Option<mpsc::Sender<(String, u32)>>,
     pub ocpp_deque: OCPPDeque,
 }
 
@@ -226,6 +240,231 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         };
         info!("Registering GetConfiguration callback");
         self.client.on_get_configuration(callback).await;
+
+        // Register ChangeConfiguration
+        let data = self.data.clone();
+        let callback = move |request: ChangeConfigurationRequest, _client: OCPP1_6Client| {
+            let data = data.clone();
+            async move {
+                debug!(
+                    "Received ChangeConfiguration request: key={}, value={}",
+                    request.key, request.value
+                );
+                let mut data_guard = data.lock().await;
+                let status =
+                    if CP::set_variable_value(&mut data_guard, &request.key, &request.value) {
+                        if let Err(e) = CP::persist_variables_to_file(&data_guard) {
+                            error!("Failed to persist configuration file: {:?}", e);
+                        }
+                        ConfigurationStatus::Accepted
+                    } else {
+                        ConfigurationStatus::NotSupported
+                    };
+
+                Ok(ChangeConfigurationResponse { status })
+            }
+        };
+        info!("Registering ChangeConfiguration callback");
+        self.client.on_change_configuration(callback).await;
+
+        let internal_producer = self.trigger_message_requests.clone();
+
+        // Register RemoteStartTransaction
+        let data = self.data.clone();
+        let callback = move |request: RemoteStartTransactionRequest, _client: OCPP1_6Client| {
+            let data = data.clone();
+            let internal_producer = internal_producer.clone();
+            async move {
+                debug!(
+                    "Received RemoteStartTransaction: connector_id={:?}, id_tag={}",
+                    request.connector_id, request.id_tag
+                );
+                let mut evse_index: Option<u32> = None;
+                let data_guard = data.lock().await;
+                if let Some(connector) = request.connector_id {
+                    for (&idx, evse) in &data_guard.evses {
+                        if evse.connector_ids.contains(&connector) {
+                            evse_index = Some(idx);
+                            break;
+                        }
+                    }
+                } else {
+                    if data_guard.evses.len() == 1 {
+                        for (&idx, evse) in &data_guard.evses {
+                            if evse.status != "Charging" {
+                                evse_index = Some(idx);
+                            }
+                        }
+                    } else {
+                        let mut plugged_not_charging = vec![];
+                        for (&idx, evse) in &data_guard.evses {
+                            if evse.plugged_in.is_some() && evse.status != "Charging" {
+                                plugged_not_charging.push(idx);
+                            }
+                        }
+                        if plugged_not_charging.len() == 1 {
+                            evse_index = Some(plugged_not_charging[0]);
+                        }
+                    }
+                }
+                drop(data_guard);
+                if let Some(evse_idx) = evse_index {
+                    let mut data_guard = data.lock().await;
+                    data_guard.authorization =
+                        Some(AuthorizationType::Remote(crate::cp_data::RFID {
+                            id_tag: (request.id_tag.clone()),
+                        }));
+                    internal_producer
+                        .as_ref()
+                        .unwrap()
+                        .send(("remote_start_transaction".to_string(), evse_idx))
+                        .await
+                        .unwrap();
+                    Ok(RemoteStartTransactionResponse {
+                        status: RemoteStartStopStatus::Accepted,
+                    })
+                } else {
+                    warn!(
+                        "No evse found for RemoteStartTransaction with connector_id {:?}",
+                        request.connector_id
+                    );
+                    Ok(RemoteStartTransactionResponse {
+                        status: RemoteStartStopStatus::Rejected,
+                    })
+                }
+            }
+        };
+        info!("Registering RemoteStartTransaction callback");
+        self.client.on_remote_start_transaction(callback).await;
+
+        // Register RemoteStopTransaction
+        let data = self.data.clone();
+        let callback = move |request: RemoteStopTransactionRequest, _client: OCPP1_6Client| {
+            let data = data.clone();
+            async move {
+                debug!(
+                    "Received RemoteStopTransaction: transaction_id={}",
+                    request.transaction_id
+                );
+                // Find the charging evse
+                let evse_index = {
+                    let data_guard = data.lock().await;
+                    data_guard.evses.iter().find_map(|(idx, evse)| {
+                        if evse.status == "Charging" {
+                            Some(*idx)
+                        } else {
+                            None
+                        }
+                    })
+                };
+                if let Some(evse_idx) = evse_index {
+                    let mut data_guard = data.lock().await;
+                    // Add RemoteStop event
+                    Ok(RemoteStopTransactionResponse {
+                        status: RemoteStartStopStatus::Accepted,
+                    })
+                } else {
+                    warn!("No charging evse found for RemoteStop");
+                    Ok(RemoteStopTransactionResponse {
+                        status: RemoteStartStopStatus::Rejected,
+                    })
+                }
+            }
+        };
+        info!("Registering RemoteStopTransaction callback");
+        self.client.on_remote_stop_transaction(callback).await;
+
+        // Register DataTransfer for pricing messages
+        let data = self.data.clone();
+        let callback = move |request: DataTransferRequest, _client: OCPP1_6Client| {
+            let data = data.clone();
+            async move {
+                debug!(
+                    "Received DataTransfer: vendor_string={}, message_id={:?}",
+                    request.vendor_string, request.message_id
+                );
+                if request.vendor_string == "org.openchargealliance.costmsg" {
+                    if let Some(message_id) = &request.message_id {
+                        match message_id.as_str() {
+                            "SetUserPrice" => {
+                                // Handle SetUserPrice
+                                if let Some(data_str) = &request.data {
+                                    if let Ok(value) = serde_json::from_str::<Value>(data_str) {
+                                        if let Ok(set_price) =
+                                            serde_json::from_value::<SetUserPriceData>(value)
+                                        {
+                                            info!(
+                                                "Received SetUserPrice for id_token: {}",
+                                                set_price.id_token
+                                            );
+                                            // TODO: Store user-specific price
+                                        }
+                                    }
+                                }
+                            }
+                            "RunningCost" => {
+                                // Handle RunningCost
+                                if let Some(data_str) = &request.data {
+                                    if let Ok(value) = serde_json::from_str::<Value>(data_str) {
+                                        if let Ok(running_cost) =
+                                            serde_json::from_value::<RunningCostData>(value)
+                                        {
+                                            info!(
+                                                "Received RunningCost for transaction {}: cost={}",
+                                                running_cost.transaction_id, running_cost.cost
+                                            );
+                                            // TODO: Update EVSE pricing state
+                                        }
+                                    }
+                                }
+                            }
+                            "FinalCost" => {
+                                // Handle FinalCost
+                                if let Some(data_str) = &request.data {
+                                    if let Ok(value) = serde_json::from_str::<Value>(data_str) {
+                                        if let Ok(final_cost) =
+                                            serde_json::from_value::<FinalCostData>(value)
+                                        {
+                                            info!("Received FinalCost for transaction {}: cost={}, text={}", final_cost.transaction_id, final_cost.cost, final_cost.price_text);
+                                            // TODO: Display final bill
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                debug!("Unknown message_id: {}", message_id);
+                            }
+                        }
+                    }
+                }
+                Ok(DataTransferResponse {
+                    status: rust_ocpp::v1_6::types::DataTransferStatus::Accepted,
+                    data: None,
+                })
+            }
+        };
+        info!("Registering DataTransfer callback");
+        self.client.on_data_transfer(callback).await;
+    }
+
+    async fn send_heartbeat(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let response = self
+            .client
+            .send_heartbeat(rust_ocpp::v1_6::messages::heart_beat::HeartbeatRequest {
+                ..Default::default()
+            })
+            .await;
+
+        match response {
+            Ok(_) => {
+                info!("Heartbeat request sent");
+                Ok(())
+            }
+            Err(e) => {
+                error!("Heartbeat request failed: {:?}", e);
+                Err(e)
+            }
+        }
     }
 
     async fn register_trigger_message(
@@ -240,7 +479,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             async move {
                 debug!("Received TriggerMessage from server");
                 if let Some(sender) = trigger_message_requests {
-                    let _ = sender.send("boot_notification".to_string()).await;
+                    let _ = sender.send(("boot_notification".to_string(), 0)).await;
                 }
                 Ok(TriggerMessageResponse {
                     status: TriggerMessageStatus::Accepted,
@@ -378,7 +617,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         );
         // Get Measurands and Interval from device model
         let mut measurands_str = String::new();
-        
+
         for component in &data.variables.components {
             if component.name == "AlignedDataCtrlr" && component.evse.is_none() {
                 for var in &component.variables {
@@ -398,24 +637,31 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         let mut sampled_values: Vec<SampledValue> = Vec::new();
         for measurand_string in measurands {
             let (measurand, value): (Measurand, String) = match measurand_string {
-                "Energy.Active.Import.Register" => 
-                (Measurand::EnergyActiveImportRegister, evse.meter_energy.to_string()),
-                "Power.Active.Import" => (Measurand::PowerActiveImport,  if let Some(ev) = &evse.ev {
+                "Energy.Active.Import.Register" => (
+                    Measurand::EnergyActiveImportRegister,
+                    evse.meter_energy.to_string(),
+                ),
+                "Power.Active.Import" => (
+                    Measurand::PowerActiveImport,
+                    if let Some(ev) = &evse.ev {
                         (ev.power * 1000.0).to_string() // Convert kW to W
                     } else {
                         "0".to_string()
-                    }),
-                "Current.Import" => (Measurand::CurrentImport,  if let Some(ev) = &evse.ev {
+                    },
+                ),
+                "Current.Import" => (
+                    Measurand::CurrentImport,
+                    if let Some(ev) = &evse.ev {
                         (ev.power * 1000.0 / 230.0).to_string() // Current in A
                     } else {
                         "0".to_string()
-                    }),
+                    },
+                ),
                 _ => {
                     warn!("Unsupported measurand: {}", measurand_string);
                     continue;
                 }
             };
-           
 
             info!("Meter value for {:?}: {}", measurand, value);
             sampled_values.push(SampledValue {
@@ -427,7 +673,6 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                 location: None,
                 unit: None,
             });
-
         }
 
         // For now, send empty meter values as placeholder
@@ -467,8 +712,8 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         connector_id: u32,
         status: String,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        use rust_ocpp::v1_6::types::ChargePointStatus;
         use rust_ocpp::v1_6::types::ChargePointErrorCode;
+        use rust_ocpp::v1_6::types::ChargePointStatus;
 
         let status_enum = match status.as_str() {
             "Available" => ChargePointStatus::Available,
@@ -483,15 +728,16 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             _ => ChargePointStatus::Available,
         };
 
-        let status_notification_request = rust_ocpp::v1_6::messages::status_notification::StatusNotificationRequest {
-            connector_id,
-            status: status_enum,
-            error_code: ChargePointErrorCode::ConnectorLockFailure, // TODO: proper error code
-            info: None,
-            timestamp: Some(chrono::Utc::now()),
-            vendor_id: None,
-            vendor_error_code: None,
-        };
+        let status_notification_request =
+            rust_ocpp::v1_6::messages::status_notification::StatusNotificationRequest {
+                connector_id,
+                status: status_enum,
+                error_code: ChargePointErrorCode::NoError, // TODO: proper error code
+                info: None,
+                timestamp: Some(chrono::Utc::now()),
+                vendor_id: None,
+                vendor_error_code: None,
+            };
 
         let response = self
             .ocpp_deque
@@ -506,6 +752,33 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
             trace!("StatusNotification is scheduled");
         } else {
             trace!("StatusNotification failed to schedule");
+        }
+
+        Ok(())
+    }
+
+    async fn send_data_transfer(
+        &self,
+        vendor_id: String,
+        message_id: Option<String>,
+        data: Option<Value>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let data_str = data.map(|v| v.to_string());
+        let request = DataTransferRequest {
+            vendor_string: vendor_id,
+            message_id,
+            data: data_str,
+        };
+
+        let response = self
+            .ocpp_deque
+            .do_send_request_queued(request, "DataTransfer", Some(MessageReference::NoReference))
+            .await;
+
+        if let Ok(_) = response {
+            trace!("DataTransfer is scheduled");
+        } else {
+            trace!("DataTransfer failed to schedule");
         }
 
         Ok(())

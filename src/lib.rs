@@ -1,3 +1,4 @@
+pub mod cli;
 mod client;
 mod common_client;
 pub mod communicator1_6;
@@ -6,7 +7,7 @@ pub mod communicator_trait;
 mod connect;
 pub mod cp;
 pub mod cp_data;
-pub mod cli;
+pub mod logger;
 pub mod ocpp_deque;
 pub mod raw_ocpp_common_call;
 mod reconnectws;

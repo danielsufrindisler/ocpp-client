@@ -268,7 +268,7 @@ impl CommonOcppClientBase {
                 let message = Utf8Bytes::from(serde_json::to_string(&as_json)?);
 
                 let message = Message::Text(message);
-                info!("** SENDING: {}", message);
+                info!("{} ** SENDING: {}", self.address_str, message);
 
                 sink.send(message).await?;
             } else {
