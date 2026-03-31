@@ -12,6 +12,7 @@ pub mod ocpp_deque;
 pub mod raw_ocpp_common_call;
 mod reconnectws;
 pub mod rest_server;
+pub mod message_stats;
 
 #[cfg(feature = "ocpp_1_6")]
 pub mod ocpp_1_6;

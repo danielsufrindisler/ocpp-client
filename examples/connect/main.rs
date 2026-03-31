@@ -14,6 +14,7 @@ struct CliArgs {
     test_file: Option<String>,
     speed_multiplier: f64,
     test_length: u64,
+    data_directory: String,
 }
 
 impl CliArgs {
@@ -38,6 +39,7 @@ impl CliArgs {
             test_file: None,
             speed_multiplier: 1.0,
             test_length: 1000,
+            data_directory: "./data".to_string(),
         };
 
         // If neither server nor client specified, default to both
@@ -82,14 +84,24 @@ impl CliArgs {
                 return Err("--test_length requires a numeric argument".to_string());
             }
         }
+
+        // Parse --data_directory argument
+        if let Some(pos) = args.iter().position(|x| x == "--data_directory") {
+            if let Some(dir) = args.get(pos + 1) {
+                cli_args.data_directory = dir.clone();
+            } else {
+                return Err("--data_directory requires a path argument".to_string());
+            }
+        }
+
         // Validate: test file only with client mode
         if cli_args.test_file.is_some() && !cli_args.run_client {
             return Err("--test can only be used with --client mode".to_string());
         }
 
             info!(
-        "OCPP Client starting with options: run_server={}, run_client={}, test_file={:?}, speed={}, test_length={}",
-        cli_args.run_server, cli_args.run_client, cli_args.test_file, cli_args.speed_multiplier, cli_args.test_length
+        "OCPP Client starting with options: run_server={}, run_client={}, test_file={:?}, speed={}, test_length={}, data_directory={}",
+        cli_args.run_server, cli_args.run_client, cli_args.test_file, cli_args.speed_multiplier, cli_args.test_length, cli_args.data_directory
     );
 
         Ok(cli_args)
@@ -110,6 +122,7 @@ OPTIONS:
     --speed <MULTIPLIER>    Simulation speed multiplier (default: 1.0)
                            e.g., --speed 2.0 runs 2x faster
     --test_length <SECONDS> Duration to run the simulation (default: 1000)
+    --data_directory <PATH> Directory containing JSON data files (default: ./data)
     --help, -h             Show this help message
 
 MODES:
@@ -130,7 +143,10 @@ EXAMPLES:
     ocpp-client --server
 
     # Run static test 2x faster
-    ocpp-client --server --client --test test_0_1.json --speed 2.0 --run_for=1000
+    ocpp-client --server --client --test test_0_1.json --speed 2.0
+
+    # Use custom data directory
+    ocpp-client --server --client --data_directory /path/to/data
 
     # Start interactive mode
     ocpp-client --server --client --speed 0.5
@@ -172,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
 
-            rest_client_example(test_file, args.speed_multiplier, args.test_length).await?;
+            rest_client_example(test_file, args.speed_multiplier, args.test_length, args.data_directory).await?;
 
             // In static mode, exit after test completes
             info!("Test completed, exiting.");
@@ -195,6 +211,7 @@ async fn rest_client_example(
     test_config: &str,
     _speed_multiplier: f64,
     test_length: u64,
+    data_directory: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("=== REST Client - Loading test configuration ===");
 
@@ -218,7 +235,8 @@ async fn rest_client_example(
 
         let cp_request = json!({
             "name": cp_name,
-            "use_original": false
+            "use_original": false,
+            "data_directory": data_directory
         });
 
         let cp_response = client
@@ -239,6 +257,35 @@ async fn rest_client_example(
     }
 
     info!("Test configuration loaded successfully");
-    tokio::time::sleep(Duration::from_secs(test_length)).await; // Wait a moment before exiting
+    info!("Running test for {} seconds...", test_length);
+    tokio::time::sleep(Duration::from_secs(test_length)).await;
+    
+    // Generate summary JSON
+    generate_test_summary(&client, rest_url).await?;
+    
+    Ok(())
+}
+
+async fn generate_test_summary(
+    _client: &reqwest::Client,
+    _rest_url: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("Generating test summary...");
+
+    // Create summary object
+    let mut summary = json!({
+        "test_summary": {
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "cps": []
+        }
+    });
+
+    // Try to get CP list from server (this would require a status endpoint)
+    // For now, we'll create a basic summary structure
+    let summary_path = "./logs/summary.json";
+    let summary_json = serde_json::to_string_pretty(&summary)?;
+    std::fs::write(summary_path, summary_json)?;
+    
+    info!("Test summary written to {}", summary_path);
     Ok(())
 }

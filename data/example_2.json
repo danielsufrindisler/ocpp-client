@@ -1,0 +1,94 @@
+{
+  "components": [
+    {
+      "instance": null,
+      "name": "AlignedDataCtrlr",
+      "evse": null,
+      "connector": null,
+      "variables": [
+        {
+          "instance": null,
+          "name": "Interval",
+          "ocpp16_key": "MeterValueSampleInterval",
+          "value": null,
+          "required": true,
+          "attributes": {
+            "mutability": "ReadWrite",
+            "type": null
+          },
+          "characteristics": {
+            "data_type": "integer",
+            "unit": "s",
+            "values_list": null,
+            "max_limit": null,
+            "min_limit": null
+          },
+          "used": null,
+          "default_value": 15
+        }
+      ]
+    },
+    {
+      "instance": null,
+      "name": "OCPPCommCtrlr",
+      "evse": null,
+      "connector": null,
+      "variables": [
+        {
+          "instance": null,
+          "name": "HeartbeatInterval",
+          "ocpp16_key": "HeartbeatInterval",
+          "value": null,
+          "required": false,
+          "attributes": {
+            "mutability": "ReadWrite",
+            "type": null
+          },
+          "characteristics": {
+            "data_type": "integer",
+            "unit": "s",
+            "values_list": null,
+            "max_limit": null,
+            "min_limit": 1
+          },
+          "used": null,
+          "default_value": "300"
+        },
+        {
+          "instance": null,
+          "name": "NetworkConfigurationPriority",
+          "ocpp16_key": "CpoName",
+          "value": null,
+          "required": true,
+          "attributes": {
+            "mutability": "ReadWrite",
+            "type": "Actual"
+          },
+          "characteristics": {
+            "data_type": "SequenceList",
+            "unit": null,
+            "values_list": "Network1",
+            "max_limit": null,
+            "min_limit": null
+          },
+          "used": null,
+          "default_value": "Network1"
+        }
+      ]
+    },
+    {
+      "instance": "EVSE 1",
+      "name": "EVSE",
+      "evse": 1,
+      "connector": null,
+      "variables": []
+    },
+    {
+      "instance": null,
+      "name": "Connector",
+      "evse": 1,
+      "connector": 1,
+      "variables": []
+    }
+  ]
+}

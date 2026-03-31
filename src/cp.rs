@@ -320,15 +320,16 @@ impl CP {
     }
 
     pub fn prepare_cp_variables_files(
+        data_directory: &str,
         cp_file_name: &str,
         use_original: bool,
     ) -> Result<
         (crate::cp_data::CPConfigFile, GetVariableData),
         Box<dyn std::error::Error + Send + Sync>,
     > {
-        let base_path = "./data/device_model.json";
-        let orig_path = format!("./data/{}.orig.json", cp_file_name);
-        let active_path = format!("./data/{}.json", cp_file_name);
+        let base_path = format!("{}/device_model.json", data_directory);
+        let orig_path = format!("{}/{}.orig.json", data_directory, cp_file_name);
+        let active_path = format!("{}/{}.json", data_directory, cp_file_name);
 
         if !std::path::Path::new(&orig_path).exists() {
             // base file might be full component format

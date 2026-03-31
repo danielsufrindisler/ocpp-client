@@ -23,6 +23,7 @@ pub struct CreateCPRequest {
     pub name: String,
     #[serde(default)]
     pub use_original: Option<bool>,
+    pub data_directory: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,7 +95,7 @@ impl CPStore {
         let cp_file_name = request.name.clone();
         let use_original = request.use_original.unwrap_or(false);
 
-        let (cp_config, variables) = CP::prepare_cp_variables_files(&cp_file_name, use_original)
+        let (cp_config, variables) = CP::prepare_cp_variables_files(&request.data_directory, &cp_file_name, use_original)
             .expect("Failed to prepare CP variables files");
 
         CP::list_components(variables.clone());

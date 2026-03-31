@@ -11,6 +11,8 @@ use rust_ocpp::v1_6::messages::remote_start_transaction::{
 use rust_ocpp::v1_6::messages::remote_stop_transaction::{
     RemoteStopTransactionRequest, RemoteStopTransactionResponse,
 };
+use rust_ocpp::v1_6::messages::reset::{ResetRequest, ResetResponse};
+use rust_ocpp::v1_6::types::ResetResponseStatus;
 use rust_ocpp::v1_6::messages::start_transaction::StartTransactionRequest;
 use rust_ocpp::v1_6::messages::stop_transaction::StopTransactionRequest;
 use rust_ocpp::v1_6::types::ConfigurationStatus;
@@ -240,6 +242,34 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
         };
         info!("Registering GetConfiguration callback");
         self.client.on_get_configuration(callback).await;
+
+
+
+        let data = self.data.clone();
+        let callback = move |request: ResetRequest, _client: OCPP1_6Client| {
+            let _data = data.clone();
+            async move {
+                debug!("Received ResetRequest from server");
+
+                Ok(ResetResponse {
+                    status: rust_ocpp::v1_6::types::ResetResponseStatus::Accepted,
+                })
+            }
+        };
+        info!("Registering Reset callback");
+        self.client.on_reset(callback).await;
+
+
+
+
+
+
+
+
+
+
+
+
 
         // Register ChangeConfiguration
         let data = self.data.clone();
