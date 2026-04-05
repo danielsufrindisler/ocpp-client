@@ -26,9 +26,45 @@ Add the following to your `Cargo.toml`:
 ocpp-client = "0.1"
 ```
 
-## Usage
+## Test Automation
 
-see examples/connect.rs
+The project includes automated testing capabilities:
+
+### REST API Server
+Start the REST API server for programmatic control:
+```bash
+cargo run --example connect -- --server
+```
+
+The server provides:
+- Interactive API documentation at `http://127.0.0.1:3000/swagger-ui`
+- Endpoints for creating charge points and triggering events
+- Message statistics tracking at `/summary`
+
+### Test Configuration
+
+The project uses `data/test_all_cps.json` which defines 4 different CP types:
+
+**CP_1_Full**: Complete implementation with all features (events, variables, components)
+**CP_2_NoEvents**: Minimal CP for testing core functionality without events
+**CP_3_ComponentsOnly**: CP focused on component-based device model
+**CP_4_RESTOnly**: CP created via REST API at runtime (not in test config file)
+
+### Automated Test Script
+Run automated tests with all 4 CP types:
+```bash
+python3 test_automation.py
+```
+
+This script:
+1. Starts the OCPP test server with `data/test_all_cps.json`
+2. Waits for initialization
+3. Creates CP_4 via the `/cp/from-rest` API endpoint
+4. Triggers plug-in and authorize events for all CPs
+5. Retrieves and parses complete message statistics
+6. Displays results for each CP type
+
+See `test_automation.py` for implementation details.
 
 ## Organization / Architecture
 
@@ -52,4 +88,13 @@ This is the main file for now.  It will be split up into several different modul
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](https://github.com/danielsufrin-disler/ocpp-client/blob/main/LICENSE) file for details.
+
+
+## TODOs
+fauult events
+file is only for config keys
+file is for nothing
+
+
+
 

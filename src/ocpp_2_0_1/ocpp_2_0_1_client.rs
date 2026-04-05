@@ -1,6 +1,8 @@
 use crate::common_client::CommonOcppClientBase;
+use crate::message_stats::MessageTracker;
 use crate::ocpp_2_0_1::OCPP2_0_1Error;
 use crate::raw_ocpp_common_call::{RawOcppCommonError, RawOcppCommonResult};
+use std::sync::Arc;
 
 use futures::SinkExt;
 use log::warn;
@@ -177,9 +179,18 @@ impl OCPP2_0_1Client {
         password: Option<String>,
         address_str: String,
         proto_str: String,
+        message_tracker: Option<Arc<MessageTracker>>,
+        cp_serial: Option<String>,
     ) -> Self {
         Self {
-            base: CommonOcppClientBase::new_unconnected(username, password, address_str, proto_str),
+            base: CommonOcppClientBase::new_unconnected(
+                username,
+                password,
+                address_str,
+                proto_str,
+                message_tracker,
+                cp_serial,
+            ),
         }
     }
 

@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use log::{trace};
 
 /// Statistics for a specific message type
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MessageTypeStats {
     pub message_type: String,
     pub sent_count: u64,
@@ -29,6 +30,7 @@ impl MessageTypeStats {
     }
 
     pub fn record_sent(&mut self, success: bool) {
+        trace!("Recording sent message of type {:?}: success={}", self.message_type, success);
         self.sent_count += 1;
         if success {
             self.sent_success += 1;
@@ -38,6 +40,7 @@ impl MessageTypeStats {
     }
 
     pub fn record_received(&mut self, success: bool) {
+        trace!("Recording received message of type {:?}: success={}", self.message_type, success);
         self.received_count += 1;
         if success {
             self.received_success += 1;
@@ -48,7 +51,7 @@ impl MessageTypeStats {
 }
 
 /// Summary statistics for a single CP
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CPSummary {
     pub cp_id: usize,
     pub cp_serial: String,
@@ -86,7 +89,7 @@ impl CPSummary {
 }
 
 /// Overall test summary
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestSummary {
     pub cps: HashMap<usize, CPSummary>,
     pub start_time: String,

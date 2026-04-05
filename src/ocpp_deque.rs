@@ -1,5 +1,7 @@
 use crate::common_client::CommonOcppClientBase;
 use crate::cp_data::MessageReference;
+use crate::logger::CP_ID;
+use crate::message_stats::MessageTracker;
 use crate::raw_ocpp_common_call::RawOcppCommonCall;
 use crate::raw_ocpp_common_call::RawOcppCommonError;
 use log::{debug, trace};
@@ -34,6 +36,7 @@ pub struct OCPPDeque {
         >,
     >,
     sender: Sender<OcppQueuedMessage>,
+    message_tracker: Option<Arc<MessageTracker>>,
 }
 
 impl OCPPDeque {
@@ -42,9 +45,10 @@ impl OCPPDeque {
         let _client2 = client.clone();
 
         let obj = Self {
-            client: client,
+            client: _client2,
             callback_map: Arc::new(Mutex::new(BTreeMap::new())),
             sender: sender,
+            message_tracker: client.message_tracker.clone(),
         };
         let obj2 = obj.clone();
         tokio::spawn(async move {
@@ -72,6 +76,29 @@ impl OCPPDeque {
                 .await;
 
             if let Ok(ref ocpp_result) = result {
+                if let Some(tracker) = &self.message_tracker {
+                    let cp_id = self.client.cp_id.or_else(|| CP_ID.try_with(|id| *id).ok());
+                    if let Some(cp_id) = cp_id {
+                        let cp_serial = self
+                            .client
+                            .cp_serial
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string());
+                        match ocpp_result {
+                            Ok(_) => {
+                                tracker
+                                    .record_received(cp_id, cp_serial.clone(), &call.2, true)
+                                    .await;
+                            }
+                            Err(_) => {
+                                tracker
+                                    .record_received(cp_id, cp_serial.clone(), &call.2, false)
+                                    .await;
+                            }
+                        }
+                    }
+                }
+
                 let callback_map = self.callback_map.lock().await;
                 if let Some(callback) = &mut callback_map.get(&call.2) {
                     trace!("there is a callback for action {}", call.2);

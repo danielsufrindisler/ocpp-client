@@ -1,9 +1,10 @@
+use crate::message_stats::MessageTracker;
 use crate::raw_ocpp_common_call::{RawOcppCommonCall, RawOcppCommonError, RawOcppCommonResult};
 use crate::reconnectws::ReconnectWs;
 use crate::logger::CP_ID;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt, TryStreamExt};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, warn, trace};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -34,6 +35,8 @@ pub struct CommonOcppClientBase {
     pub proto_str: String,
     pub handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub cp_id: Option<usize>,
+    pub cp_serial: Option<String>,
+    pub message_tracker: Option<Arc<MessageTracker>>,
 }
 
 impl CommonOcppClientBase {
@@ -43,6 +46,8 @@ impl CommonOcppClientBase {
         password: Option<String>,
         address_str: String,
         proto_str: String,
+        message_tracker: Option<Arc<MessageTracker>>,
+        cp_serial: Option<String>,
     ) -> Self {
         let (ping_sender, _) = tokio::sync::broadcast::channel(10);
 
@@ -63,6 +68,8 @@ impl CommonOcppClientBase {
             proto_str,
             handle: Arc::new(Mutex::new(None)),
             cp_id,
+            cp_serial,
+            message_tracker,
         };
 
         self_.establish_connection();
@@ -87,6 +94,8 @@ impl CommonOcppClientBase {
         let handle_holder = self.handle.clone();
         let cp_id = self.cp_id.unwrap();
         
+        let cp_serial = self.cp_serial.clone();
+        let message_tracker = self.message_tracker.clone();
         let handle = tokio::spawn(async move {
            
             CP_ID.scope(cp_id, async {
@@ -94,6 +103,8 @@ impl CommonOcppClientBase {
                     sink2, stream3, response_channels2, pong_channels2,
                     request_senders2, ping_sender2, stream_lock, sink_lock,
                     username, password, address_str, proto_str, handle_holder,
+                    cp_serial,
+                    message_tracker,
                 ).await
             }).await
             
@@ -121,6 +132,8 @@ impl CommonOcppClientBase {
         address_str: String,
         proto_str: String,
         handle_holder: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        cp_serial: Option<String>,
+        message_tracker: Option<Arc<MessageTracker>>,
     ) {
         let options: crate::ConnectOptions = crate::ConnectOptions {
             username: username.clone(),
@@ -145,7 +158,7 @@ impl CommonOcppClientBase {
                 CP_ID.scope(id, async {
                     Self::message_loop(
                         sink2, stream3, response_channels2, pong_channels2,
-                        request_senders2, ping_sender2,
+                        request_senders2, ping_sender2, cp_serial, message_tracker,
                     ).await
                 }).await;             
             });
@@ -161,6 +174,8 @@ impl CommonOcppClientBase {
         pong_channels2: Arc<Mutex<VecDeque<oneshot::Sender<()>>>>,
         request_senders2: Arc<Mutex<BTreeMap<String, mpsc::Sender<RawOcppCommonCall>>>>,
         ping_sender2: Sender<()>,
+        cp_serial: Option<String>,
+        message_tracker: Option<Arc<MessageTracker>>,
     ) {
         loop {
             let cp_id = CP_ID.try_with(|id| *id).ok().unwrap();
@@ -173,20 +188,29 @@ impl CommonOcppClientBase {
 
                     if let Some(stream2) = lock.as_mut() {
 
+                        let response_channels2 = response_channels2.clone();
+                        let ping_sender2 = ping_sender2.clone();
+                        let pong_channels2 = pong_channels2.clone();
+                        let request_senders2 = request_senders2.clone();
+                        let sink2 = sink2.clone();
+                        let cp_serial = cp_serial.clone();
+                        let message_tracker = message_tracker.clone();
                         let _ = stream2.map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e))
-            .try_for_each(|message| {
+            .try_for_each(move |message| {
 
                 let response_channels2 = response_channels2.clone();
                 let ping_sender = ping_sender2.clone();
                 let pong_channels2 = pong_channels2.clone();
                 let request_senders = request_senders2.clone();
                 let _sink = sink2.clone();
+                let cp_serial = cp_serial.clone();
+                let message_tracker = message_tracker.clone();
                 async move {
                     match message {
                         Message::Text(raw_payload) => {
                             let raw_value = serde_json::from_str(&raw_payload)?;
 
-                            info!("** Received: {}", raw_payload);
+                            info!("RX: {}", raw_payload);
 
                             match raw_value {
                                 Value::Array(list) => {
@@ -199,6 +223,16 @@ impl CommonOcppClientBase {
                                                         let call: RawOcppCommonCall =
                                                             serde_json::from_str(&raw_payload).unwrap();
                                                         let action = &call.2;
+                                                        if let Some(tracker) = &message_tracker {
+                                                            tracker
+                                                                .record_received(
+                                                                    cp_id,
+                                                                    cp_serial.clone().unwrap_or_else(|| "unknown".to_string()),
+                                                                    action,
+                                                                    true,
+                                                                )
+                                                                .await;
+                                                        }
                                                         let sender_opt = {
                                                             // Try to acquire lock, fail immediately if unavailable
                                                             match request_senders.try_lock() {
@@ -317,42 +351,80 @@ impl CommonOcppClientBase {
         }
     }
 
+    async fn record_sent_message(&self, action: &str, success: bool) {
+        if let Some(tracker) = &self.message_tracker {
+            let cp_id = self
+                .cp_id
+                .or_else(|| CP_ID.try_with(|id| *id).ok());
+            if let Some(cp_id) = cp_id {
+                let cp_serial = self
+                    .cp_serial
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string());
+                tracker
+                    .record_sent(cp_id, cp_serial, action, success)
+                    .await;
+            }
+        }
+    }
+
+    async fn with_cp_scope<F, T>(&self, fut: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        if let Some(cp_id) = self.cp_id.or_else(|| CP_ID.try_with(|id| *id).ok()) {
+            CP_ID.scope(cp_id, fut).await
+        } else {
+            fut.await
+        }
+    }
+
     /// Send a raw request and wait for response
     pub async fn do_send_request_raw(
         &self,
         message_id: Uuid,
         call: RawOcppCommonCall,
     ) -> Result<Result<Value, RawOcppCommonError>, Box<dyn std::error::Error + Send + Sync>> {
-        {
-            debug!("Trying to send {:?}", call);
-            let mut lock = self.sink.lock().await;
-            if let Some(sink) = lock.as_mut() {
-                let as_json = json!(call);
+        self.with_cp_scope(async {
+            {
+                trace!("Trying to send {:?}", call);
+                let mut lock = self.sink.lock().await;
+                if let Some(sink) = lock.as_mut() {
+                    let as_json = json!(call);
 
-                let message = Utf8Bytes::from(serde_json::to_string(&as_json)?);
+                    let message = Utf8Bytes::from(serde_json::to_string(&as_json)?);
 
-                let message = Message::Text(message);
-                info!("{} ** SENDING: {}", self.address_str, message);
+                    let message = Message::Text(message);
+                    info!("TX: {}", message);
 
-                sink.send(message).await?;
-            } else {
-                return Err("Sink not connected".into());
+                    let send_result = sink.send(message).await;
+                    if let Err(err) = send_result {
+                        self.record_sent_message(&call.2, false).await;
+                        return Err(err.into());
+                    }
+                    self.record_sent_message(&call.2, true).await;
+                } else {
+                    // Sink not connected - record as failed send
+                    self.record_sent_message(&call.2, false).await;
+                    return Err("Sink not connected".into());
+                }
             }
-        }
 
-        let (s, r) = oneshot::channel();
-        {
-            let mut response_channels = self.response_channels.lock().await;
-            response_channels.insert(message_id, s);
-        }
+            let (s, r) = oneshot::channel();
+            {
+                let mut response_channels = self.response_channels.lock().await;
+                response_channels.insert(message_id, s);
+            }
 
-        match timeout(self.timeout, r).await? {
-            Ok(res) => match res {
-                Ok(value) => Ok(Ok(value)),
-                Err(e) => Ok(Err(e)),
-            },
-            Err(_) => Err("Timeout".into()),
-        }
+            match timeout(self.timeout, r).await? {
+                Ok(res) => match res {
+                    Ok(value) => Ok(Ok(value)),
+                    Err(e) => Ok(Err(e)),
+                },
+                Err(e) => Err(e.into()),
+            }
+        })
+        .await
     }
 
     /// Send a serialized request and wait for response

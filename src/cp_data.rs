@@ -137,6 +137,8 @@ pub enum EventTypes {
     RemoteStop(ChargeSessionReference),
     CommunicationStop,
     CommunicationStart,
+    Faulted(Vec<u32>),  // Empty vec means all connectors, otherwise specific connector IDs
+    FaultCleared(Vec<u32>), // Empty vec means all connectors, otherwise specific connector IDs
 }
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 
@@ -219,6 +221,7 @@ pub struct EVSE {
     pub charging_task: Option<tokio::task::JoinHandle<()>>,
     pub meter_energy: f32, // Energy in Wh
     pub status: String,    // OCPP status: Available, Preparing, Charging, etc.
+    pub faulted_connectors: Vec<u32>, // Connectors in Faulted state
     // Pricing fields
     pub current_tariff: Option<ChargingPrice>,
     pub idle_tariff: Option<IdlePrice>,
@@ -240,6 +243,7 @@ impl Clone for EVSE {
             charging_task: None, // Don't clone the JoinHandle
             meter_energy: self.meter_energy,
             status: self.status.clone(),
+            faulted_connectors: self.faulted_connectors.clone(),
             current_tariff: self.current_tariff.clone(),
             idle_tariff: self.idle_tariff.clone(),
             running_cost: self.running_cost,
@@ -300,17 +304,17 @@ pub struct Attributes {
     pub mutability: String,
     #[serde(rename = "type")]
     #[allow(dead_code)]
-    type_string: Option<String>,
+    pub type_string: Option<String>,
 }
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 pub struct Characteristics {
-    data_type: String,
-    unit: Option<String>,
-    values_list: Option<String>,
-    max_limit: Option<u32>,
-    min_limit: Option<u32>,
+    pub data_type: String,
+    pub unit: Option<String>,
+    pub values_list: Option<String>,
+    pub max_limit: Option<u32>,
+    pub min_limit: Option<u32>,
 }
 
 impl fmt::Display for ValueType {

@@ -5,6 +5,7 @@ use crate::cp_data::{
     CPData, ChargeSessionReference, EventInjectionMessage, EventTypes, GetVariableData,
     MessageReference, ScheduledEventWithAbsoluteTime, EV, EVSE,
 };
+use crate::message_stats::MessageTracker;
 use crate::ocpp_1_6::OCPP1_6Client;
 use crate::ocpp_2_0_1::OCPP2_0_1Client;
 use crate::ocpp_deque::OCPPDeque;
@@ -22,12 +23,13 @@ pub struct CP {
     pub data: Arc<Mutex<CPData>>,
     pub client: Option<crate::Client>,
     pub event_rx: Option<mpsc::Receiver<EventInjectionMessage>>,
+    pub message_tracker: Option<Arc<MessageTracker>>,
 }
 
 impl CP {
     pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Get connection info from data
-        info!("running");
+        trace!("running 1");
 
         let mut data = self.data.lock().await;
 
@@ -61,6 +63,7 @@ impl CP {
                     charging_task: None,
                     meter_energy,
                     status: "Available".to_string(),
+                    faulted_connectors: vec![],
                     current_tariff: None,
                     idle_tariff: None,
                     running_cost: 0.0,
@@ -106,7 +109,7 @@ impl CP {
         let options_password = data.password.clone();
         let data_clone = self.data.clone();
         let (trigger_message_requests, rx) = mpsc::channel::<(String, u32)>(100);
-        info!("running");
+        trace!("running 2");
 
         drop(data);
 
@@ -118,6 +121,8 @@ impl CP {
                     options_password,
                     address.to_string(),
                     selected_protocol.to_string(),
+                    self.message_tracker.clone(),
+                    Some(data_clone.lock().await.serial.clone()),
                 );
                 let _base_clone = client.base.clone();
                 *self.communicator.lock().await = Some(Box::new(OCPPCommunicator1_6 {
@@ -135,6 +140,8 @@ impl CP {
                     options_password,
                     address.to_string(),
                     selected_protocol.to_string(),
+                    self.message_tracker.clone(),
+                    Some(data_clone.lock().await.serial.clone()),
                 );
                 let _base_clone = client.base.clone();
                 *self.communicator.lock().await = Some(Box::new(OCPPCommunicator2_0_1 {
@@ -151,7 +158,7 @@ impl CP {
             }
         }
         let cp_data = data_clone;
-        info!("running");
+        trace!("running 3");
 
         let comm_mpsc = self.communicator.clone();
 
@@ -210,17 +217,17 @@ impl CP {
                 };
             }
         });
-        info!("running 5");
+        trace!("running 4");
 
-        //todo, this needs to not happen yet... connectio not established
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Spawn EVSE tasks immediately
+        self.spawn_evse_tasks().await;
         if let Some(comm) = self.communicator.lock().await.as_ref() {
             comm.send_boot_notification().await.ok();
         }
 
-        info!("spawning evse tasks immediately after boot notification");
 
-        // Spawn EVSE tasks immediately
-        self.spawn_evse_tasks().await;
         // Wait a bit for connection to establish
         /*
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -395,18 +402,18 @@ impl CP {
     pub fn set_variable_value(cp_data: &mut CPData, ocpp16_key: &str, new_value: &str) -> bool {
         let mut updated = false;
         for component in &mut cp_data.variables.components {
-            info!(
+            debug!(
                 "Checking component {} for variable with ocpp16_key {}",
                 component.name, ocpp16_key
             );
             for variable in &mut component.variables {
-                info!(
+                debug!(
                     "Checking variable {} for variable with ocpp16_key {}",
                     variable.name, ocpp16_key
                 );
 
                 if let Some(ref key) = variable.ocpp16_key {
-                    info!(
+                    debug!(
                         "Checking ocpp16_key {} for variable with ocpp16_key {}",
                         key, ocpp16_key
                     );
@@ -434,15 +441,15 @@ impl CP {
 
     pub fn list_components(data: GetVariableData) {
         for component in data.components {
-            info!("Component: {}", component.name);
+            debug!("Component: {}", component.name);
             if let Some(instance) = component.instance {
-                info!("  Instance: {}", instance);
+                debug!("  Instance: {}", instance);
             }
             if let Some(evse) = component.evse {
-                info!("  EVSE: {}", evse);
+                debug!("  EVSE: {}", evse);
             }
             if let Some(connector) = component.connector {
-                info!("  Connector: {}", connector);
+                debug!("  Connector: {}", connector);
             }
         }
     }
@@ -490,6 +497,22 @@ impl CP {
             loop {
                 let now = Instant::now();
 
+                // Process any events that are ready immediately
+                while let Some(evt) = event_queue.peek() {
+                    if evt.scheduled_time <= now {
+                        if let Some(scheduled_evt) = event_queue.pop() {
+                            Self::process_event(
+                                &cp_data,
+                                &comm_arc,
+                                scheduled_evt.event,
+                                scheduled_evt.event_index,
+                            ).await;
+                        }
+                    } else {
+                        break; // Next event is in the future
+                    }
+                }
+
                 // Get next event from queue
                 let next_event = event_queue.peek();
                 let sleep_duration = next_event.map(|e| {
@@ -508,8 +531,9 @@ impl CP {
                             _ => tokio::time::sleep(Duration::from_millis(100)).await,
                         }
                     } => {
-                        // Timer fired - process next event if it's time
-                        if let Some(evt) = event_queue.peek() {
+                        // Timer fired - process any events that are now ready
+                        // (This handles the case where we slept and now events are ready)
+                        while let Some(evt) = event_queue.peek() {
                             if evt.scheduled_time <= Instant::now() {
                                 if let Some(scheduled_evt) = event_queue.pop() {
                                     Self::process_event(
@@ -519,6 +543,8 @@ impl CP {
                                         scheduled_evt.event_index,
                                     ).await;
                                 }
+                            } else {
+                                break;
                             }
                         }
                     }
@@ -584,6 +610,13 @@ impl CP {
                         }
                     }
                 }
+                
+                // For testing purposes, set authorization immediately since we don't have a server
+                {
+                    let mut cp_data_guard = cp_data.lock().await;
+                    cp_data_guard.authorization = Some(auth_type.clone());
+                }
+                
                 // Log current price
                 let cp_data_guard = cp_data.lock().await;
                 let price_info = CP::get_variable_value(&*cp_data_guard, "DefaultPrice")
@@ -689,6 +722,86 @@ impl CP {
                     }
                 }
             },
+            EventTypes::Faulted(connector_ids) => {
+                info!("Handling faulted event for connectors: {:?}", connector_ids);
+                let mut cp_data_guard = cp_data.lock().await;
+                if let Some(evse) = cp_data_guard.evses.get_mut(&1) { // Default to EVSE 1, can be parameterized
+                    if connector_ids.is_empty() {
+                        // Fault all connectors
+                        evse.faulted_connectors = evse.connector_ids.clone();
+                    } else {
+                        // Fault specific connectors
+                        for &connector_id in &connector_ids {
+                            if !evse.faulted_connectors.contains(&connector_id) {
+                                evse.faulted_connectors.push(connector_id);
+                            }
+                        }
+                    }
+                    evse.status = "Faulted".to_string();
+                    info!("Connectors now faulted: {:?}", evse.faulted_connectors);
+                }
+                drop(cp_data_guard);
+
+                // Send StatusNotification for affected connectors
+                if let Some(comm_inner) = comm_arc.lock().await.as_ref() {
+                    for connector_id in if connector_ids.is_empty() { 
+                        vec![1, 2, 3, 4] // Send for all common connector IDs
+                    } else {
+                        connector_ids
+                    } {
+                        let _ = comm_inner
+                            .send_status_notification(connector_id, "Faulted".to_string())
+                            .await;
+                    }
+                }
+            }
+            EventTypes::FaultCleared(connector_ids) => {
+                info!("Handling fault cleared event for connectors: {:?}", connector_ids);
+                let mut cp_data_guard = cp_data.lock().await;
+                if let Some(evse) = cp_data_guard.evses.get_mut(&1) { // Default to EVSE 1
+                    if connector_ids.is_empty() {
+                        // Clear faults on all connectors
+                        evse.faulted_connectors.clear();
+                    } else {
+                        // Clear faults on specific connectors
+                        for connector_id in &connector_ids {
+                            evse.faulted_connectors.retain(|&id| id != *connector_id);
+                        }
+                    }
+                    evse.status = if evse.started { "Charging".to_string() } 
+                                 else if evse.plugged_in.is_some() { "Preparing".to_string() }
+                                 else { "Available".to_string() };
+                    info!("Connectors now faulted: {:?}", evse.faulted_connectors);
+                }
+                drop(cp_data_guard);
+
+                // Send StatusNotification for cleared connectors
+                if let Some(comm_inner) = comm_arc.lock().await.as_ref() {
+                    for connector_id in if connector_ids.is_empty() {
+                        vec![1, 2, 3, 4]
+                    } else {
+                        connector_ids
+                    } {
+                        let status = {
+                            let data = cp_data.lock().await;
+                            if let Some(evse) = data.evses.get(&1) {
+                                if evse.started {
+                                    "Charging".to_string()
+                                } else if evse.plugged_in.is_some() {
+                                    "Preparing".to_string()
+                                } else {
+                                    "Available".to_string()
+                                }
+                            } else {
+                                "Available".to_string()
+                            }
+                        };
+                        let _ = comm_inner
+                            .send_status_notification(connector_id, status)
+                            .await;
+                    }
+                }
+            }
         }
     }
 
@@ -741,22 +854,27 @@ impl CP {
     ) {
         debug!("Checking if can start charging for evse {}", evse_index);
         let data = cp_data.lock().await;
-        debug!("Checking if can start charging for evse {},  Authorized: {}, Plugged in: {:?}, Started: {:?}",
-            evse_index, data.authorization.is_some(), data.evses[&evse_index].plugged_in, data.evses[&evse_index].started);
+        let evse = &data.evses[&evse_index];
+        let connector_id = evse.plugged_in.unwrap_or(1);
+        let is_faulted = evse.faulted_connectors.is_empty() || evse.faulted_connectors.contains(&connector_id);
+        
+        debug!("Checking if can start charging for evse {},  Authorized: {}, Plugged in: {:?}, Started: {:?}, Faulted: {}",
+            evse_index, data.authorization.is_some(), evse.plugged_in, evse.started, is_faulted);
         if data.authorization.is_some()
-            && data.evses[&evse_index].plugged_in.is_some()
-            && !data.evses[&evse_index].started
+            && evse.plugged_in.is_some()
+            && !evse.started
+            && !is_faulted
         {
             drop(data);
             if let Some(comm) = communicator.lock().await.as_ref() {
                 let reference: ChargeSessionReference = ChargeSessionReference {
                     evse_index,
-                    connector_id: 1, //todo
+                    connector_id: connector_id,
                 };
                 info!("Starting charging for evse {}", evse_index);
                 let _ = comm.send_start_transaction(reference.clone()).await;
                 let _ = comm
-                    .send_status_notification(1, "Charging".to_string())
+                    .send_status_notification(connector_id, "Charging".to_string())
                     .await;
                 let cp_data_clone = cp_data.clone();
                 let communicator_clone = communicator.clone();

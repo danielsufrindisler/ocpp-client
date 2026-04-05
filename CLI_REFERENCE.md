@@ -14,6 +14,11 @@ Start server (interactive mode via REST API):
 ocpp-client --server
 ```
 
+Run comprehensive test with all 4 CP types:
+```bash
+cargo run --example connect -- --server --client --test data/test_all_cps.json --test_length 60
+```
+
 Run static test:
 ```bash
 ocpp-client --client --test test_0_1.json
@@ -516,6 +521,98 @@ ocpp-client --server
 1. Check that `--client` is enabled (if using `--server` alone, no events process from files)
 2. Verify event `duration` - events happen `duration` seconds from NOW
 3. Check logs for any parsing errors in the JSON
+
+---
+
+## Comprehensive Testing with test_all_cps.json
+
+The `data/test_all_cps.json` file provides a complete test configuration with 4 different CP types for comprehensive testing.
+
+### Running the Test
+
+```bash
+cargo run --example connect -- --server --client --test data/test_all_cps.json --test_length 60
+```
+
+Or use the automated Python script:
+
+```bash
+python3 test_automation.py
+```
+
+### The 4 CP Types
+
+#### CP_1_Full
+**Purpose:** Most complete CP implementation with all OCPP features
+**Features:**
+- Full configuration (username, password, vendor, model, serial)
+- Event capabilities (authorize, plug, unplug, fault)
+- Variable configurations
+- EVSE and connector configurations
+- Component definitions for device model
+
+**Use Case:** Full functionality testing, comprehensive message validation
+
+#### CP_2_NoEvents
+**Purpose:** Minimal CP for testing core functionality
+**Features:**
+- Basic properties only
+- No event capabilities (no "events" array)
+- Simple configuration
+
+**Use Case:** Testing server stability with inactive CPs, basic connectivity
+
+#### CP_3_ComponentsOnly
+**Purpose:** CP focused on component-based device model testing
+**Features:**
+- Basic properties
+- Minimal events for testing
+- Component and variable focus
+
+**Use Case:** Device model validation, component testing
+
+#### CP_4_RESTOnly
+**Purpose:** CP created exclusively via REST API at runtime
+**Features:**
+- Not pre-defined in test configuration
+- Created dynamically via `/cp/from-rest` endpoint
+- Demonstrates REST API capabilities
+
+**Use Case:** REST API testing, dynamic CP creation validation
+
+### Python Test Automation
+
+The `test_automation.py` script provides automated testing of all 4 CP types:
+
+```python
+python3 test_automation.py
+```
+
+**Script Actions:**
+1. Starts OCPP server with `test_all_cps.json`
+2. Waits for server initialization
+3. Creates CP_4 via REST API
+4. Triggers plug and authorize events on all CPs
+5. Retrieves message statistics
+6. Displays results for each CP
+
+**Statistics Output:**
+```
+=== MESSAGE STATISTICS ===
+{
+  "cps": {
+    "0": {
+      "cp_serial": "CP_1_Full",
+      "messages": {
+        "Authorize": {"sent_count": ..., "sent_success": ..., ...},
+        ...
+      },
+      "total_energy_delivered_kwh": ...
+    },
+    ...
+  }
+}
+```
 
 ---
 

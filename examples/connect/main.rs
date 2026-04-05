@@ -152,10 +152,11 @@ EXAMPLES:
     ocpp-client --server --client --speed 0.5
 
 REST API ENDPOINTS:
-    POST   /cp                    Create new charger
-    GET    /status                Get system status
-    POST   /ID/events             Add event to charger  
-    GET    /ID/chargers           List chargers
+    POST   /cp/from-file        Create charger from config files
+    POST   /cp/from-rest        Create charger with REST parameters
+    GET    /cp                  List all chargers
+    POST   /cp/ID/events        Add event to charger  
+    GET    /summary             Get test summary
 
 For detailed information, see REST_API.md and CLI_REFERENCE.md
 "#;
@@ -240,7 +241,7 @@ async fn rest_client_example(
         });
 
         let cp_response = client
-            .post(&format!("{}/cp", rest_url))
+            .post(&format!("{}/cp/from-file", rest_url))
             .json(&cp_request)
             .send()
             .await?;
@@ -267,25 +268,27 @@ async fn rest_client_example(
 }
 
 async fn generate_test_summary(
-    _client: &reqwest::Client,
-    _rest_url: &str,
+    client: &reqwest::Client,
+    rest_url: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Generating test summary...");
 
-    // Create summary object
-    let mut summary = json!({
-        "test_summary": {
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-            "cps": []
-        }
-    });
+    let summary_url = format!("{}/summary", rest_url);
+    let response = client.get(&summary_url).send().await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch summary from {}: {}",
+            summary_url,
+            response.status()
+        )
+        .into());
+    }
 
-    // Try to get CP list from server (this would require a status endpoint)
-    // For now, we'll create a basic summary structure
+    let summary_json: serde_json::Value = response.json().await?;
     let summary_path = "./logs/summary.json";
-    let summary_json = serde_json::to_string_pretty(&summary)?;
-    std::fs::write(summary_path, summary_json)?;
-    
+    let summary_text = serde_json::to_string_pretty(&summary_json)?;
+    std::fs::write(summary_path, summary_text)?;
+
     info!("Test summary written to {}", summary_path);
     Ok(())
 }

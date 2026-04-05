@@ -240,7 +240,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                 }
             }
         };
-        info!("Registering GetConfiguration callback");
+        trace!("Registering GetConfiguration callback");
         self.client.on_get_configuration(callback).await;
 
 
@@ -256,7 +256,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                 })
             }
         };
-        info!("Registering Reset callback");
+        trace!("Registering Reset callback");
         self.client.on_reset(callback).await;
 
 
@@ -294,7 +294,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                 Ok(ChangeConfigurationResponse { status })
             }
         };
-        info!("Registering ChangeConfiguration callback");
+        trace!("Registering ChangeConfiguration callback");
         self.client.on_change_configuration(callback).await;
 
         let internal_producer = self.trigger_message_requests.clone();
@@ -364,7 +364,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                 }
             }
         };
-        info!("Registering RemoteStartTransaction callback");
+        trace!("Registering RemoteStartTransaction callback");
         self.client.on_remote_start_transaction(callback).await;
 
         // Register RemoteStopTransaction
@@ -401,7 +401,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                 }
             }
         };
-        info!("Registering RemoteStopTransaction callback");
+        trace!("Registering RemoteStopTransaction callback");
         self.client.on_remote_stop_transaction(callback).await;
 
         // Register DataTransfer for pricing messages
@@ -473,7 +473,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                 })
             }
         };
-        info!("Registering DataTransfer callback");
+        trace!("Registering DataTransfer callback");
         self.client.on_data_transfer(callback).await;
     }
 
@@ -659,6 +659,7 @@ impl OCPPCommunicator for OCPPCommunicator1_6 {
                 }
             }
         }
+        info!("measurands are {}", measurands_str.clone());
 
         // Parse measurands from comma-separated list
         let measurands: Vec<&str> = measurands_str.split(',').map(|s| s.trim()).collect();
